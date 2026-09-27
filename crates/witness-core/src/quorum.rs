@@ -190,6 +190,7 @@ mod tests {
                 country: None,
             },
             witness: kp.public(),
+            beacon: None,
         }
         .sign(kp)
         .unwrap()

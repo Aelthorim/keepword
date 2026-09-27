@@ -65,6 +65,9 @@ enum Cmd {
         /// Verify a bundle file instead of the local store.
         #[arg(long, conflicts_with = "reference")]
         bundle: Option<PathBuf>,
+        /// Check Bitcoin anchors against this Esplora API.
+        #[arg(long)]
+        esplora: Option<String>,
     },
     /// Write a self-contained evidence bundle anyone can verify.
     Export {
@@ -107,13 +110,83 @@ enum Cmd {
         #[arg(long)]
         forget: bool,
     },
-    /// Serve the web UI (read-only) and optionally run the watch scheduler.
+    /// Serve the web UI and, with --api-addr, the peer API; run the watch
+    /// scheduler, federation and anchoring loops.
     Serve {
+        /// Web UI address. The UI shows page content: keep it private.
         #[arg(long, default_value = "127.0.0.1:8480")]
         addr: String,
+        /// Public API address for peers and verifiers (e.g. 0.0.0.0:8481).
+        #[arg(long)]
+        api_addr: Option<String>,
         /// Also capture watched URLs when due.
         #[arg(long)]
         watch: bool,
+        /// Periodically anchor the log in Bitcoin via OpenTimestamps.
+        #[arg(long)]
+        anchor: bool,
+    },
+    /// Talk to other witnesses.
+    Net {
+        #[command(subcommand)]
+        cmd: NetCmd,
+    },
+    /// Ask the network to watch a URL; assigned witnesses capture it.
+    Request {
+        url: String,
+        #[arg(long, default_value = "1h", value_parser = humantime::parse_duration)]
+        every: Duration,
+        /// How long the request stays active (at most 30 days).
+        #[arg(long = "for", default_value = "7days", value_parser = humantime::parse_duration)]
+        duration: Duration,
+        #[arg(long)]
+        render: bool,
+    },
+    /// What independent witnesses agree a URL served.
+    Verdict { url: String },
+    /// Alerts raised by this node and received from the network.
+    Alerts {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+    },
+    /// Anchor the log in Bitcoin through OpenTimestamps.
+    Anchor {
+        #[command(subcommand)]
+        cmd: AnchorCmd,
+    },
+    /// Fetch and verify a drand beacon.
+    Beacon {
+        /// Round number (default: latest).
+        round: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum NetCmd {
+    /// Add a peer by its API base URL.
+    AddPeer { url: String },
+    /// List known peers.
+    Peers,
+    /// Run one federation round now.
+    Sync,
+    /// Summary of this node's view of the network.
+    Status,
+}
+
+#[derive(Subcommand)]
+enum AnchorCmd {
+    /// Submit the latest tree head to the calendars.
+    Submit,
+    /// Fetch completed proofs and check them against Bitcoin.
+    Upgrade,
+    /// List anchors.
+    List,
+    /// Write the .ots proof and the tree-head bytes it timestamps, for the
+    /// standard `ots verify` tool.
+    Export {
+        size: u64,
+        #[arg(short, long)]
+        out: PathBuf,
     },
 }
 
@@ -164,6 +237,11 @@ fn parse_retain(s: &str) -> Result<Retain, String> {
 
 #[tokio::main]
 async fn main() {
+    // Exit quietly when piped into `head` and the like.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let cli = Cli::parse();
     match run(cli).await {
         Ok(true) => {}
@@ -244,6 +322,7 @@ async fn run(cli: Cli) -> Result<bool> {
             reference,
             at,
             bundle,
+            esplora,
         } => {
             let b: Bundle = match (bundle, reference) {
                 (Some(path), _) => {
@@ -258,7 +337,11 @@ async fn run(cli: Cli) -> Result<bool> {
                 }
                 (None, None) => bail!("give a URL, an attestation ID, or --bundle FILE"),
             };
-            let report = Node::verify_bundle(&b);
+            let mut report = Node::verify_bundle(&b);
+            if let Some(esplora) = esplora {
+                let http = witness_node::httpc::Http::new(false, false)?;
+                witness_node::anchor::verify_anchor_online(&http, &esplora, &b, &mut report).await;
+            }
             if cli.json {
                 print_json(
                     &serde_json::json!({ "ok": report.ok(), "attestation": b.attestation, "checks": report.checks }),
@@ -474,26 +557,313 @@ async fn run(cli: Cli) -> Result<bool> {
             let (blobs, rows) = node.store.purge(url.as_str(), forget)?;
             println!("deleted {blobs} blobs and {rows} attestation records for {url}; the log is unchanged");
         }
-        Cmd::Serve { addr, watch } => {
+        Cmd::Serve {
+            addr,
+            api_addr,
+            watch,
+            anchor,
+        } => {
             let node = Arc::new(Node::open(&dir)?);
-            let listener = tokio::net::TcpListener::bind(&addr).await?;
+            let ui = tokio::net::TcpListener::bind(&addr).await?;
             eprintln!("web UI on http://{addr}/");
-            let server = axum::serve(listener, witness_node::web::router(node.clone()));
+            let mut tasks = tokio::task::JoinSet::new();
+            let ui_app = witness_node::web::router(node.clone());
+            tasks.spawn(async move { axum::serve(ui, ui_app).await.map_err(anyhow::Error::from) });
+            if let Some(api_addr) = api_addr {
+                let api = tokio::net::TcpListener::bind(&api_addr).await?;
+                eprintln!("peer API on http://{api_addr}/v1/");
+                let app = witness_node::api::router(node.clone());
+                tasks.spawn(async move {
+                    axum::serve(
+                        api,
+                        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    )
+                    .await
+                    .map_err(anyhow::Error::from)
+                });
+            }
             if watch {
-                tokio::select! {
-                    r = server => r?,
-                    r = witness_node::web::scheduler(node, |line| eprintln!("{line}")) => r?,
-                    _ = tokio::signal::ctrl_c() => eprintln!("stopping"),
+                let n = node.clone();
+                tasks.spawn(async move {
+                    witness_node::web::scheduler(n, |line| eprintln!("{line}")).await
+                });
+            }
+            if node.config.network.endpoint.is_some() || !node.config.network.peers.is_empty() {
+                let n = node.clone();
+                tasks.spawn(async move {
+                    witness_node::daemon::federation_loop(n, |l| eprintln!("{l}")).await
+                });
+            }
+            if anchor {
+                let n = node.clone();
+                tasks.spawn(async move {
+                    witness_node::daemon::anchor_loop(n, |l| eprintln!("{l}")).await
+                });
+            }
+            tokio::select! {
+                Some(r) = tasks.join_next() => r??,
+                _ = tokio::signal::ctrl_c() => eprintln!("stopping"),
+            }
+        }
+        Cmd::Net { cmd } => {
+            let node = Node::open(&dir)?;
+            match cmd {
+                NetCmd::AddPeer { url } => {
+                    let d = node.add_peer(&url).await?;
+                    println!(
+                        "added peer {} at {}",
+                        d.body.key,
+                        d.body.endpoint.unwrap_or_default()
+                    );
                 }
-            } else {
-                tokio::select! {
-                    r = server => r?,
-                    _ = tokio::signal::ctrl_c() => eprintln!("stopping"),
+                NetCmd::Peers => {
+                    let peers = node.store.peers()?;
+                    if cli.json {
+                        return print_json(&peers).map(|_| true);
+                    }
+                    let scores = node.store.reputation_scores(now_ms())?;
+                    for p in peers {
+                        let loc = node.location_of(&p.key, now_ms())?;
+                        println!(
+                            "{}  {}  log {}  location {}  reputation {:.1}  last sync {}{}",
+                            p.key.short(),
+                            p.endpoint.as_deref().unwrap_or("(no endpoint)"),
+                            p.head.as_ref().map_or(0, |h| h.head.size),
+                            loc.map(|l| l.to_string())
+                                .unwrap_or_else(|| "unknown".into()),
+                            scores.get(&p.key).copied().unwrap_or(0.0),
+                            p.last_sync.map(format_ms).unwrap_or_else(|| "never".into()),
+                            p.last_error
+                                .map(|e| format!("  error: {e}"))
+                                .unwrap_or_default()
+                        );
+                    }
+                }
+                NetCmd::Sync => {
+                    let r = node.sync().await?;
+                    if cli.json {
+                        print_json(&r)?;
+                    } else {
+                        println!(
+                            "synced {}/{} peers: {} new leaves, {} new attestations, {} messages in, {} out",
+                            r.synced, r.peers, r.new_leaves, r.new_attestations, r.gossip_in, r.gossip_out
+                        );
+                        for (who, e) in &r.errors {
+                            println!("  {who}: {e}");
+                        }
+                    }
+                }
+                NetCmd::Status => {
+                    let now = now_ms();
+                    let epoch = witness_core::beacon::epoch_of(now);
+                    let seed = node.epoch_seed(epoch).await;
+                    let me = node.location_of(&node.key.public(), now)?;
+                    println!("witness     {}", node.key.public());
+                    println!(
+                        "endpoint    {}",
+                        node.config
+                            .network
+                            .endpoint
+                            .as_deref()
+                            .unwrap_or("(none: push-only)")
+                    );
+                    println!(
+                        "location    {}",
+                        me.map(|l| l.to_string())
+                            .unwrap_or_else(|| "not corroborated".into())
+                    );
+                    println!("peers       {}", node.store.peers()?.len());
+                    println!(
+                        "candidates  {} witnesses eligible for assignment",
+                        node.candidates(now)?.len()
+                    );
+                    match seed {
+                        Ok((s, true)) => {
+                            println!("epoch       {epoch}, seed {} (drand)", s.short())
+                        }
+                        Ok((s, false)) => println!(
+                            "epoch       {epoch}, seed {} (INSECURE: no beacon)",
+                            s.short()
+                        ),
+                        Err(e) => println!("epoch       {epoch}, no seed: {e:#}"),
+                    }
+                    println!(
+                        "requests    {} active",
+                        node.store.requests_active(now)?.len()
+                    );
+                    println!(
+                        "mirrored    {} attestations from peers",
+                        node.store.foreign_count()?
+                    );
+                    let bad = node.store.equivocating_logs()?;
+                    if !bad.is_empty() {
+                        println!(
+                            "EQUIVOCATED {}",
+                            bad.iter().map(|k| k.short()).collect::<Vec<_>>().join(", ")
+                        );
+                    }
                 }
             }
         }
+        Cmd::Request {
+            url,
+            every,
+            duration,
+            render,
+        } => {
+            let node = Node::open(&dir)?;
+            let r =
+                node.request_watch(&url, every.as_secs(), duration.as_millis() as i64, render)?;
+            println!(
+                "request {} for {} every {} until {}; it spreads on the next sync",
+                r.id().short(),
+                r.body.url,
+                humantime::format_duration(every),
+                format_ms(r.body.expires_at_ms)
+            );
+        }
+        Cmd::Verdict { url } => {
+            let node = Node::open(&dir)?;
+            let url = target::canonical_url(&url)?;
+            let v = node.verdict(url.as_str())?;
+            if cli.json {
+                return print_json(&v).map(|_| true);
+            }
+            print_verdict(&v);
+        }
+        Cmd::Alerts { limit } => {
+            let node = Node::open(&dir)?;
+            let alerts = node.store.alerts(limit)?;
+            if cli.json {
+                return print_json(&alerts).map(|_| true);
+            }
+            for a in alerts {
+                println!(
+                    "{}  {:<12} {}  {}  (from {})",
+                    format_ms(a.body.issued_at_ms),
+                    format!("{:?}", a.body.kind),
+                    a.body.url.as_deref().unwrap_or("-"),
+                    a.body.summary,
+                    a.body.issuer.short()
+                );
+            }
+        }
+        Cmd::Anchor { cmd } => {
+            let node = Node::open(&dir)?;
+            match cmd {
+                AnchorCmd::Submit => match node.anchor_submit().await? {
+                    Some(a) => println!(
+                        "submitted tree head of size {} ({} calendar attestations)",
+                        a.size,
+                        witness_core::ots::DetachedTimestamp::from_bytes(&a.ots)?
+                            .timestamp
+                            .claims()
+                            .len()
+                    ),
+                    None => println!("latest tree head is already anchored"),
+                },
+                AnchorCmd::Upgrade => {
+                    let r = node.anchor_upgrade().await?;
+                    println!(
+                        "checked {} pending anchors: {} upgraded, {} confirmed in Bitcoin",
+                        r.checked, r.upgraded, r.confirmed
+                    );
+                }
+                AnchorCmd::List => {
+                    for a in node.store.anchors()? {
+                        println!(
+                            "size {:>8}  {}  {}  updated {}",
+                            a.size,
+                            a.status,
+                            a.height.map(|h| format!("block {h}")).unwrap_or_default(),
+                            format_ms(a.updated_at)
+                        );
+                    }
+                }
+                AnchorCmd::Export { size, out } => {
+                    let a = node
+                        .store
+                        .anchors()?
+                        .into_iter()
+                        .find(|a| a.size == size)
+                        .with_context(|| format!("no anchor for size {size}"))?;
+                    std::fs::write(&out, a.head.head.signing_bytes())?;
+                    let mut ots = out.clone().into_os_string();
+                    ots.push(".ots");
+                    std::fs::write(&ots, &a.ots)?;
+                    println!(
+                        "wrote {} and {}",
+                        out.display(),
+                        PathBuf::from(ots).display()
+                    );
+                }
+            }
+        }
+        Cmd::Beacon { round } => {
+            let node = Node::open(&dir)?;
+            let b = node.fetch_beacon(round).await?;
+            println!(
+                "drand quicknet round {} at {}: randomness {} (signature verified)",
+                b.round,
+                format_ms(b.time_ms()),
+                b.randomness()
+            );
+        }
     }
     Ok(true)
+}
+
+fn print_verdict(v: &witness_node::consensus::VerdictView) {
+    use witness_core::quorum::Verdict;
+    println!("{}  ({} recent attestations)", v.url, v.considered);
+    match &v.evaluation.verdict {
+        Verdict::Agreed { group, dissenters } => {
+            println!(
+                "AGREED by {} witnesses in {} independent networks: normalized content {}",
+                group.witnesses.len(),
+                group.asns.len(),
+                group.hash.short()
+            );
+            if !dissenters.is_empty() {
+                println!(
+                    "  dissenting: {}",
+                    dissenters
+                        .iter()
+                        .map(|k| k.short())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        Verdict::Split { groups } => {
+            println!("SPLIT: independent witnesses saw different content at the same time");
+            for g in groups {
+                println!(
+                    "  {} ← {} witnesses in ASNs {:?}",
+                    g.hash.short(),
+                    g.witnesses.len(),
+                    g.asns
+                );
+            }
+        }
+        Verdict::Insufficient { groups } => {
+            println!("INSUFFICIENT: not enough independent networks yet");
+            for g in groups {
+                println!(
+                    "  {} ← {} witnesses, {} known ASNs",
+                    g.hash.short(),
+                    g.witnesses.len(),
+                    g.asns.len()
+                );
+            }
+        }
+    }
+    if v.evaluation.rejected > 0 {
+        println!(
+            "  {} attestations rejected (bad signature)",
+            v.evaluation.rejected
+        );
+    }
 }
 
 fn print_outcome(o: &Outcome) {

@@ -2,6 +2,7 @@
 //! append-only Merkle log of attestation IDs.
 
 pub mod blobs;
+pub mod net;
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -30,7 +31,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE attestations (
@@ -97,6 +98,10 @@ pub struct Watch {
     pub added_at: i64,
     pub last_run: Option<i64>,
     pub last_error: Option<String>,
+    /// Set when the watch exists because the network assigned this node a
+    /// watch request; such watches expire with the request.
+    pub request_id: Option<Digest>,
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -127,7 +132,7 @@ pub struct Store {
     pub blobs: BlobStore,
 }
 
-fn digest(row: &Row<'_>, i: usize) -> rusqlite::Result<Digest> {
+pub(crate) fn digest(row: &Row<'_>, i: usize) -> rusqlite::Result<Digest> {
     let b: Vec<u8> = row.get(i)?;
     Digest::from_slice(&b).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(i, rusqlite::types::Type::Blob, "digest".into())
@@ -138,12 +143,23 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let conn = Connection::open(dir.join("index.sqlite"))?;
+        // `witness serve` and CLI commands may share a data directory.
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Gossip and mirroring write a lot; NORMAL is crash-safe in WAL mode
+        // and only risks the last transactions on power loss. Log appends
+        // switch to FULL (see `commit`).
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
             0 => {
                 conn.execute_batch(SCHEMA)?;
+                conn.execute_batch(net::SCHEMA_V2)?;
+                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            }
+            1 => {
+                conn.execute_batch(net::SCHEMA_V2)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
             SCHEMA_VERSION => {}
@@ -159,7 +175,7 @@ impl Store {
         })
     }
 
-    fn db(&self) -> MutexGuard<'_, Connection> {
+    pub(crate) fn db(&self) -> MutexGuard<'_, Connection> {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -172,9 +188,26 @@ impl Store {
         now_ms: i64,
     ) -> Result<(Record, SignedTreeHead)> {
         sa.verify()?;
-        let a = &sa.attestation;
         let id = sa.id();
         let mut db = self.db();
+        // A tree head is published as soon as it is signed. Losing it to a
+        // power cut and later signing a different head of the same size would
+        // look exactly like equivocation, so log appends are fully durable.
+        db.pragma_update(None, "synchronous", "FULL")?;
+        let result = Self::commit_tx(&mut db, sa, &id, key, now_ms);
+        db.pragma_update(None, "synchronous", "NORMAL")?;
+        result
+    }
+
+    fn commit_tx(
+        db: &mut Connection,
+        sa: &SignedAttestation,
+        id: &Digest,
+        key: &Keypair,
+        now_ms: i64,
+    ) -> Result<(Record, SignedTreeHead)> {
+        let a = &sa.attestation;
+        let id = *id;
         let tx = db.transaction()?;
         tx.execute(
             "INSERT INTO attestations (id, url, fetched_at, method, comparison, body_hash, headers_hash, norm_hash, json)
@@ -224,6 +257,25 @@ impl Store {
         load_leaves(&self.db())
     }
 
+    /// Attestation IDs at log positions `start..end`.
+    pub fn leaf_ids_range(&self, start: u64, end: u64) -> Result<Vec<Digest>> {
+        let db = self.db();
+        let mut st =
+            db.prepare("SELECT id FROM log_leaves WHERE idx >= ?1 AND idx < ?2 ORDER BY idx")?;
+        let rows = st.query_map(params![start as i64, end as i64], |r| digest(r, 0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// URLs whose captures reference a blob.
+    pub fn urls_referencing(&self, d: &Digest) -> Result<Vec<String>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT DISTINCT url FROM attestations WHERE body_hash = ?1 OR headers_hash = ?1 OR norm_hash = ?1",
+        )?;
+        let rows = st.query_map([d.as_bytes()], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn leaf_index(&self, id: &Digest) -> Result<Option<u64>> {
         Ok(self
             .db()
@@ -242,6 +294,19 @@ impl Store {
             .query_row(
                 "SELECT json FROM tree_heads ORDER BY size DESC LIMIT 1",
                 [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        json.map(|j| serde_json::from_str(&j).map_err(Into::into))
+            .transpose()
+    }
+
+    pub fn tree_head_at(&self, size: u64) -> Result<Option<SignedTreeHead>> {
+        let json: Option<String> = self
+            .db()
+            .query_row(
+                "SELECT json FROM tree_heads WHERE size = ?1",
+                [size as i64],
                 |r| r.get(0),
             )
             .optional()?;
@@ -398,7 +463,8 @@ impl Store {
     pub fn watch_add(&self, url: &str, every_secs: u64, render: bool, now_ms: i64) -> Result<()> {
         self.db().execute(
             "INSERT INTO watch (url, every_secs, render, added_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(url) DO UPDATE SET every_secs = excluded.every_secs, render = excluded.render",
+             ON CONFLICT(url) DO UPDATE SET every_secs = excluded.every_secs, render = excluded.render,
+                request_id = NULL, expires_at = NULL",
             params![url, every_secs as i64, render, now_ms],
         )?;
         Ok(())
@@ -414,7 +480,8 @@ impl Store {
     pub fn watches(&self) -> Result<Vec<Watch>> {
         let db = self.db();
         let mut st = db.prepare(
-            "SELECT url, every_secs, render, added_at, last_run, last_error FROM watch ORDER BY url",
+            "SELECT url, every_secs, render, added_at, last_run, last_error, request_id, expires_at
+             FROM watch ORDER BY url",
         )?;
         let rows = st.query_map([], |r| {
             Ok(Watch {
@@ -424,6 +491,10 @@ impl Store {
                 added_at: r.get(3)?,
                 last_run: r.get(4)?,
                 last_error: r.get(5)?,
+                request_id: r
+                    .get::<_, Option<Vec<u8>>>(6)?
+                    .and_then(|b| Digest::from_slice(&b)),
+                expires_at: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -513,6 +584,7 @@ mod tests {
             server_ip: None,
             vantage: Vantage::default(),
             witness: kp.public(),
+            beacon: None,
         }
         .sign(kp)
         .unwrap()
@@ -580,6 +652,29 @@ mod tests {
             &p,
             &root
         ));
+    }
+
+    #[test]
+    fn migrates_v1_databases() {
+        let t = tempfile::tempdir().unwrap();
+        {
+            let c = Connection::open(t.path().join("index.sqlite")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+            c.execute(
+                "INSERT INTO watch (url, every_secs, render, added_at) VALUES ('https://a.example/', 60, 0, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let s = Store::open(t.path()).unwrap();
+        let w = s.watches().unwrap();
+        assert_eq!(w.len(), 1);
+        assert!(w[0].request_id.is_none());
+        assert!(s.peers().unwrap().is_empty());
+        drop(s);
+        // Opening again is a no-op.
+        Store::open(t.path()).unwrap();
     }
 
     #[test]

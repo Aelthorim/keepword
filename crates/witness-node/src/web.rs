@@ -75,6 +75,8 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/a/{id}/bundle.json", get(bundle_json))
         .route("/a/{id}/warc", get(warc))
         .route("/api/tree-head", get(tree_head))
+        .route("/network", get(network_page))
+        .route("/alerts", get(alerts_page))
         .with_state(node)
 }
 
@@ -137,7 +139,7 @@ fn page(title: &str, body: &str) -> Html<String> {
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content='width=device-width,initial-scale=1'>\
          <title>{} · Witness</title><style>{CSS}</style></head>\
-         <body><main><p class=muted><a href='/'>Witness</a></p>{body}</main></body></html>",
+         <body><main><p class=muted><a href='/'>Witness</a> · <a href='/network'>Network</a> · <a href='/alerts'>Alerts</a></p>{body}</main></body></html>",
         esc(title)
     ))
 }
@@ -224,7 +226,8 @@ async fn url_page(
     let raw = p.get("u").ok_or_else(|| not_found("url parameter"))?;
     let url = target::canonical_url(raw)?;
     let hist = node.store.history(url.as_str())?;
-    if hist.is_empty() {
+    let verdict = node.verdict(url.as_str())?;
+    if hist.is_empty() && verdict.considered == 0 {
         return Err(not_found("captures for this URL"));
     }
     let mut b = format!(
@@ -232,6 +235,7 @@ async fn url_page(
         esc(url.as_str()),
         esc(url.as_str())
     );
+    b.push_str(&verdict_html(&verdict));
 
     let changes = node.store.changes(Some(url.as_str()), 200)?;
     b.push_str("<h2>Edit history</h2>");
@@ -444,4 +448,153 @@ async fn tree_head(State(node): State<Arc<Node>>) -> WebResult<Response> {
         .latest_tree_head()?
         .ok_or_else(|| not_found("tree head"))?;
     Ok(axum::Json(h).into_response())
+}
+
+fn verdict_html(v: &crate::consensus::VerdictView) -> String {
+    use witness_core::quorum::Verdict;
+    let mut b = String::from("<h2>Across witnesses</h2>");
+    let group_rows = |groups: &[witness_core::quorum::Group]| {
+        let mut t = String::from("<table><tr><th>Normalized content</th><th>Witnesses</th><th>Independent networks</th></tr>");
+        for g in groups {
+            t.push_str(&format!(
+                "<tr><td class=mono>{}</td><td>{}</td><td>{}</td></tr>",
+                g.hash.short(),
+                g.witnesses.len(),
+                g.asns
+                    .iter()
+                    .map(|a| format!("AS{a}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        t.push_str("</table>");
+        t
+    };
+    match &v.evaluation.verdict {
+        Verdict::Agreed { group, dissenters } => {
+            b.push_str(&format!(
+                "<p class=pass>Agreed: {} witnesses in {} independent networks saw the same content.</p>",
+                group.witnesses.len(),
+                group.asns.len()
+            ));
+            if !dissenters.is_empty() {
+                b.push_str(&format!(
+                    "<p class=muted>{} dissenting witnesses.</p>",
+                    dissenters.len()
+                ));
+            }
+        }
+        Verdict::Split { groups } => {
+            b.push_str("<p class=silent>Split: independent witnesses saw different content at the same time. The server treats clients differently (cloaking, geo-targeting or an A/B test).</p>");
+            b.push_str(&group_rows(groups));
+        }
+        Verdict::Insufficient { groups } => {
+            b.push_str(&format!(
+                "<p class=muted>Not enough independent witnesses yet ({} recent attestations).</p>",
+                v.considered
+            ));
+            if !groups.is_empty() {
+                b.push_str(&group_rows(groups));
+            }
+        }
+    }
+    b
+}
+
+async fn network_page(State(node): State<Arc<Node>>) -> WebResult<Html<String>> {
+    let now = now_ms();
+    let mut b = String::from("<h1>Network</h1>");
+    let me = node.location_of(&node.key.public(), now)?;
+    b.push_str(&format!(
+        "<p>This witness: <span class=mono>{}</span> · endpoint {} · location {}</p>",
+        node.key.public().short(),
+        esc(node
+            .config
+            .network
+            .endpoint
+            .as_deref()
+            .unwrap_or("none (push-only)")),
+        me.map(|l| format!("AS{} {}", l.asn, esc(&l.country)))
+            .unwrap_or_else(|| "not corroborated".into())
+    ));
+    let bad = node.store.equivocating_logs()?;
+    let scores = node.store.reputation_scores(now)?;
+    b.push_str("<div class=wrap><table><tr><th>Witness</th><th>Endpoint</th><th>Location</th><th>Log</th><th>Reputation</th><th>Last sync</th><th>Status</th></tr>");
+    for p in node.store.peers()? {
+        let loc = node.location_of(&p.key, now)?;
+        let status = if bad.contains(&p.key) {
+            "<span class=silent>EQUIVOCATED</span>".to_string()
+        } else {
+            esc(p.last_error.as_deref().unwrap_or("ok"))
+        };
+        b.push_str(&format!(
+            "<tr><td class=mono>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.1}</td><td>{}</td><td>{}</td></tr>",
+            p.key.short(),
+            esc(p.endpoint.as_deref().unwrap_or("-")),
+            loc.map(|l| esc(&l.to_string())).unwrap_or_else(|| "unknown".into()),
+            p.head.as_ref().map_or(0, |h| h.head.size),
+            scores.get(&p.key).copied().unwrap_or(0.0),
+            p.last_sync.map(format_ms).unwrap_or_else(|| "never".into()),
+            status
+        ));
+    }
+    b.push_str("</table></div>");
+    let requests = node.store.requests_active(now)?;
+    if !requests.is_empty() {
+        b.push_str("<h2>Active watch requests</h2><div class=wrap><table><tr><th>URL</th><th>Every</th><th>Until</th><th>Requester</th></tr>");
+        for r in requests {
+            b.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td class=mono>{}</td></tr>",
+                esc(&r.body.url),
+                humantime::format_duration(Duration::from_secs(r.body.every_secs)),
+                format_ms(r.body.expires_at_ms),
+                r.body.requester.short()
+            ));
+        }
+        b.push_str("</table></div>");
+    }
+    let anchors = node.store.anchors()?;
+    if !anchors.is_empty() {
+        b.push_str("<h2>Bitcoin anchors</h2><table><tr><th>Tree size</th><th>Status</th><th>Block</th></tr>");
+        for a in anchors {
+            b.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+                a.size,
+                esc(&a.status),
+                a.height.map(|h| h.to_string()).unwrap_or_default()
+            ));
+        }
+        b.push_str("</table>");
+    }
+    Ok(page("Network", &b))
+}
+
+async fn alerts_page(State(node): State<Arc<Node>>) -> WebResult<Html<String>> {
+    let mut b = String::from("<h1>Alerts</h1>");
+    let alerts = node.store.alerts(200)?;
+    if alerts.is_empty() {
+        b.push_str("<p class=muted>No alerts.</p>");
+    }
+    b.push_str("<div class=wrap><table><tr><th>When</th><th>Kind</th><th>URL</th><th>Summary</th><th>From</th></tr>");
+    for a in alerts {
+        let kind = match a.body.kind {
+            witness_core::net::AlertKind::Split => "cloaking",
+            witness_core::net::AlertKind::SilentEdit => "silent edit",
+            witness_core::net::AlertKind::Equivocation => "equivocation",
+        };
+        let url = a
+            .body
+            .url
+            .as_deref()
+            .map(|u| format!("<a href='/url?u={}'>{}</a>", q(u), esc(u)))
+            .unwrap_or_default();
+        b.push_str(&format!(
+            "<tr><td>{}</td><td class=silent>{kind}</td><td>{url}</td><td>{}</td><td class=mono>{}</td></tr>",
+            format_ms(a.body.issued_at_ms),
+            esc(&a.body.summary),
+            a.body.issuer.short()
+        ));
+    }
+    b.push_str("</table></div>");
+    Ok(page("Alerts", &b))
 }

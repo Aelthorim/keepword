@@ -8,9 +8,13 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use sha2::{Digest as _, Sha256};
+
 use crate::attestation::SignedAttestation;
+use crate::net::Cosignature;
+use crate::statement::Signed;
 use crate::sth::SignedTreeHead;
-use crate::{merkle, Digest};
+use crate::{merkle, ots, Digest, Error};
 
 pub const FORMAT: &str = "witness-bundle/1";
 
@@ -22,6 +26,8 @@ pub struct Bundle {
     pub inclusion: Option<Inclusion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Content>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<Anchor>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -29,6 +35,43 @@ pub struct Inclusion {
     pub leaf_index: u64,
     pub proof: Vec<Digest>,
     pub tree_head: SignedTreeHead,
+    /// Other witnesses vouching that `tree_head` is consistent with
+    /// everything they have seen from this log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cosignatures: Vec<Signed<Cosignature>>,
+}
+
+/// Proof that the attestation was in the log before a Bitcoin block: an
+/// inclusion proof into an anchored tree head, plus the OpenTimestamps proof
+/// for that head.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Anchor {
+    pub tree_head: SignedTreeHead,
+    pub leaf_index: u64,
+    pub proof: Vec<Digest>,
+    pub ots_b64: String,
+}
+
+/// The digest Witness timestamps for a tree head.
+pub fn anchor_digest(head: &SignedTreeHead) -> [u8; 32] {
+    Sha256::digest(head.head.signing_bytes()).into()
+}
+
+impl Anchor {
+    /// Parse the proof and check it is for this tree head. Returns the
+    /// attestations it contains (pending calendars, Bitcoin blocks).
+    pub fn claims(&self) -> Result<Vec<ots::Claim>, Error> {
+        let bytes = B64
+            .decode(&self.ots_b64)
+            .map_err(|_| Error::Malformed("anchor proof is not base64"))?;
+        let d = ots::DetachedTimestamp::from_bytes(&bytes)?;
+        if d.digest != anchor_digest(&self.tree_head) {
+            return Err(Error::Malformed(
+                "anchor proof is for a different tree head",
+            ));
+        }
+        Ok(d.timestamp.claims())
+    }
 }
 
 /// Captured bytes. Any part may be withheld (for example after an erasure
@@ -103,6 +146,7 @@ impl Bundle {
             attestation,
             inclusion: None,
             content: None,
+            anchor: None,
         }
     }
 
@@ -180,8 +224,43 @@ impl Bundle {
                             "tree head is older than the capture it includes",
                         );
                     }
+                    check_cosignatures(&mut r, th, &inc.cosignatures);
                 }
             }
+        }
+
+        match &a.beacon {
+            None => r.push("not before", Status::Skip, "no drand beacon in attestation"),
+            Some(b) => match b.verify() {
+                Err(_) => r.push(
+                    "not before",
+                    Status::Fail,
+                    "drand beacon signature is invalid",
+                ),
+                // Allow a minute of clock skew between the witness and drand.
+                Ok(()) if b.time_ms() > a.fetched_at_ms + 60_000 => r.push(
+                    "not before",
+                    Status::Fail,
+                    format!(
+                        "beacon round {} is from after the claimed capture time",
+                        b.round
+                    ),
+                ),
+                Ok(()) => r.push(
+                    "not before",
+                    Status::Pass,
+                    format!(
+                        "captured after {} (drand round {}, {}s before the claimed time)",
+                        crate::format_ms(b.time_ms()),
+                        b.round,
+                        (a.fetched_at_ms - b.time_ms()) / 1000
+                    ),
+                ),
+            },
+        }
+
+        if let Some(anchor) = &self.anchor {
+            check_anchor(&mut r, &self.attestation, anchor);
         }
 
         let content = self.content.clone().unwrap_or_default();
@@ -213,6 +292,83 @@ impl Bundle {
             (None, _) => r.push("normalized", Status::Skip, "normalized text not included"),
         }
         r
+    }
+}
+
+fn check_cosignatures(r: &mut Report, th: &SignedTreeHead, cosigs: &[Signed<Cosignature>]) {
+    let mut good = std::collections::BTreeSet::new();
+    let mut bad = 0;
+    for c in cosigs {
+        if c.verify().is_ok() && c.body.covers(th) && c.body.cosigner != th.head.log {
+            good.insert(c.body.cosigner);
+        } else {
+            bad += 1;
+        }
+    }
+    if bad > 0 {
+        r.push(
+            "cosignatures",
+            Status::Fail,
+            format!("{bad} invalid cosignatures"),
+        );
+    } else if good.is_empty() {
+        r.push(
+            "cosignatures",
+            Status::Skip,
+            "no other witness has cosigned this tree head",
+        );
+    } else {
+        r.push(
+            "cosignatures",
+            Status::Pass,
+            format!("tree head cosigned by {} other witnesses", good.len()),
+        );
+    }
+}
+
+fn check_anchor(r: &mut Report, att: &SignedAttestation, anchor: &Anchor) {
+    let th = &anchor.tree_head;
+    if th.verify().is_err() || th.head.log != att.attestation.witness {
+        r.push(
+            "anchor",
+            Status::Fail,
+            "anchored tree head is not signed by this witness",
+        );
+        return;
+    }
+    let leaf = merkle::leaf_hash(att.id().as_bytes());
+    let idx = anchor.leaf_index;
+    if !merkle::verify_inclusion(&leaf, idx, th.head.size, &anchor.proof, &th.head.root) {
+        r.push(
+            "anchor",
+            Status::Fail,
+            "attestation is not in the anchored tree head",
+        );
+        return;
+    }
+    match anchor.claims() {
+        Err(e) => r.push("anchor", Status::Fail, e.to_string()),
+        Ok(claims) => {
+            let blocks: Vec<String> = claims
+                .iter()
+                .filter_map(|c| match c.attestation {
+                    ots::Attestation::Bitcoin { height } => Some(format!(
+                        "block {height} (merkle root {})",
+                        c.bitcoin_merkle_root_hex().unwrap_or_default()
+                    )),
+                    _ => None,
+                })
+                .collect();
+            let detail = if blocks.is_empty() {
+                format!("leaf {idx} of anchored head; timestamp still pending at the calendars")
+            } else {
+                format!(
+                    "leaf {idx} of anchored head; commits to Bitcoin {}, not yet checked against the chain",
+                    blocks.join(", ")
+                )
+            };
+            r.push("anchor", Status::Skip, detail);
+        }
     }
 }
 

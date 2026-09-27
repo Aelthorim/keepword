@@ -22,9 +22,141 @@ pub struct Config {
     pub capture: CaptureConfig,
     #[serde(default)]
     pub content: ContentConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
+    #[serde(default)]
+    pub beacon: BeaconConfig,
+    #[serde(default)]
+    pub quorum: QuorumConfig,
+    #[serde(default)]
+    pub anchor: AnchorConfig,
     /// Per-site normalization rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<SiteRules>,
+}
+
+/// Federation with other witnesses (docs/DESIGN.md §6).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct NetworkConfig {
+    /// Public base URL of this node's API. Leave unset for a node that can't
+    /// accept connections; it still pushes and pulls but isn't mirrored.
+    pub endpoint: Option<String>,
+    /// Peer base URLs to bootstrap from.
+    pub peers: Vec<String>,
+    pub sync_interval_secs: u64,
+    /// Witnesses assigned per watch request.
+    pub replication: usize,
+    pub max_per_country: usize,
+    /// Max active watch requests accepted from one requester.
+    pub max_requests_per_requester: u64,
+    pub max_peers: usize,
+    /// Serve raw blobs to peers, for these hosts only (and their subdomains).
+    pub serve_content_hosts: Vec<String>,
+    /// Use the first X-Forwarded-For address as the client IP (only behind a
+    /// reverse proxy you control).
+    pub trust_forwarded_for: bool,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        NetworkConfig {
+            endpoint: None,
+            peers: vec![],
+            sync_interval_secs: 60,
+            replication: 5,
+            max_per_country: 2,
+            max_requests_per_requester: 50,
+            max_peers: 500,
+            serve_content_hosts: vec![],
+            trust_forwarded_for: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct BeaconConfig {
+    /// drand HTTP API base; beacons can also arrive over gossip. Set to ""
+    /// to disable.
+    pub drand_url: Option<String>,
+    /// Without a beacon, assignment falls back to a predictable seed. Only
+    /// acceptable for private test networks.
+    pub allow_insecure_seed: bool,
+}
+
+impl BeaconConfig {
+    /// The drand API, unless disabled (`drand_url = ""`).
+    pub fn drand(&self) -> Option<&str> {
+        self.drand_url.as_deref().filter(|u| !u.is_empty())
+    }
+}
+
+impl Default for BeaconConfig {
+    fn default() -> Self {
+        BeaconConfig {
+            drand_url: Some("https://api.drand.sh".into()),
+            allow_insecure_seed: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct QuorumConfig {
+    pub window_secs: u64,
+    pub min_asns: usize,
+    pub min_dissent_asns: usize,
+    /// ip2asn-combined.tsv from iptoasn.com, for corroborating vantage.
+    pub asn_db: Option<PathBuf>,
+    /// Distinct observers needed to corroborate a witness's location.
+    pub min_observers: usize,
+    /// Count self-reported ASNs. Only for test networks.
+    pub trust_self_reported: bool,
+}
+
+impl Default for QuorumConfig {
+    fn default() -> Self {
+        QuorumConfig {
+            window_secs: 600,
+            min_asns: 3,
+            min_dissent_asns: 2,
+            asn_db: None,
+            min_observers: 2,
+            trust_self_reported: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct AnchorConfig {
+    /// OpenTimestamps calendars; empty disables anchoring.
+    pub calendars: Vec<String>,
+    /// Esplora-compatible API for checking Bitcoin block headers ("" to
+    /// disable).
+    pub esplora_url: Option<String>,
+    pub interval_secs: u64,
+}
+
+impl AnchorConfig {
+    pub fn esplora(&self) -> Option<&str> {
+        self.esplora_url.as_deref().filter(|u| !u.is_empty())
+    }
+}
+
+impl Default for AnchorConfig {
+    fn default() -> Self {
+        AnchorConfig {
+            calendars: vec![
+                "https://a.pool.opentimestamps.org".into(),
+                "https://b.pool.opentimestamps.org".into(),
+                "https://a.pool.eternitywall.com".into(),
+            ],
+            esplora_url: Some("https://blockstream.info/api".into()),
+            interval_secs: 3600,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

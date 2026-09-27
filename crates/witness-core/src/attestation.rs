@@ -4,11 +4,16 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::beacon::Beacon;
 use crate::encoding::Encoder;
 use crate::keys::{Keypair, Signature, WitnessKey};
 use crate::{Digest, Error};
 
-const SIGNING_DOMAIN: &str = "witness/attestation/v1";
+const SIGNING_DOMAIN_V1: &str = "witness/attestation/v1";
+/// v2 = v1 plus a drand beacon, which proves the capture happened after the
+/// beacon's round was published. Attestations without a beacon keep the v1
+/// encoding, so existing signatures stay valid.
+const SIGNING_DOMAIN_V2: &str = "witness/attestation/v2";
 
 /// How the witness obtained the content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -89,12 +94,20 @@ pub struct Attestation {
     #[serde(default)]
     pub vantage: Vantage,
     pub witness: WitnessKey,
+    /// The latest drand beacon the witness knew when it fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beacon: Option<Beacon>,
 }
 
 impl Attestation {
     /// The canonical bytes the witness signs.
     pub fn signing_bytes(&self) -> Vec<u8> {
-        let mut e = Encoder::new(SIGNING_DOMAIN);
+        let domain = if self.beacon.is_some() {
+            SIGNING_DOMAIN_V2
+        } else {
+            SIGNING_DOMAIN_V1
+        };
+        let mut e = Encoder::new(domain);
         e.str(&self.url)
             .str(&self.final_url)
             .list(&self.redirects, |e, r| {
@@ -125,6 +138,9 @@ impl Attestation {
                 e.str(c);
             })
             .fixed(&self.witness.0);
+        if let Some(b) = &self.beacon {
+            e.u64(b.round).bytes(&b.signature);
+        }
         e.finish()
     }
 
@@ -220,6 +236,7 @@ pub(crate) mod tests {
                 country: Some("DE".into()),
             },
             witness: kp.public(),
+            beacon: None,
         }
     }
 

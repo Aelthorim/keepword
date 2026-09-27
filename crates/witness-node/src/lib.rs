@@ -1,10 +1,20 @@
 //! A single Witness node: capture → normalize → sign → log, plus change
 //! detection, evidence bundles and self-audit.
 
+pub mod anchor;
+pub mod api;
+pub mod beacon;
 pub mod config;
+pub mod consensus;
+pub mod daemon;
+pub mod federation;
+pub mod httpc;
+pub mod vantage;
 pub mod web;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
@@ -27,6 +37,12 @@ pub struct Node {
     pub store: Store,
     normalizer: Normalizer,
     http: HttpCapturer,
+    /// Client for peers and external services.
+    pub net: httpc::Http,
+    pub asn_db: Option<vantage::AsnDb>,
+    /// This node's descriptor for the current run.
+    pub descriptor: witness_core::statement::Signed<witness_core::net::Descriptor>,
+    seen_envelopes: Mutex<HashMap<Digest, i64>>,
 }
 
 /// Result of one capture.
@@ -53,14 +69,40 @@ impl Node {
         let store = Store::open(dir).context("opening store")?;
         let normalizer = Normalizer::new(config.rules.clone())?;
         let http = HttpCapturer::new(config.http())?;
-        Ok(Node {
+        let net = httpc::Http::new(
+            config.capture.allow_private_addresses,
+            config.capture.use_system_proxy,
+        )?;
+        let asn_db = config
+            .quorum
+            .asn_db
+            .as_deref()
+            .map(vantage::AsnDb::load)
+            .transpose()?;
+        let placeholder = witness_core::statement::Signed::sign(
+            witness_core::net::Descriptor {
+                key: key.public(),
+                endpoint: None,
+                vantage: Default::default(),
+                issued_at_ms: 0,
+                software: String::new(),
+            },
+            &key,
+        )?;
+        let mut node = Node {
             dir: dir.to_path_buf(),
             config,
             key,
             store,
             normalizer,
             http,
-        })
+            net,
+            asn_db,
+            descriptor: placeholder,
+            seen_envelopes: Mutex::new(HashMap::new()),
+        };
+        node.descriptor = node.build_descriptor()?;
+        Ok(node)
     }
 
     pub fn init(dir: &Path, config: &Config) -> Result<Keypair> {
@@ -76,12 +118,14 @@ impl Node {
 
     pub async fn capture(&self, url: &str, render: bool) -> Result<Outcome> {
         let url = target::canonical_url(url)?;
+        // Fetched before the page, so the capture provably happened after it.
+        let beacon = self.capture_beacon().await;
         let captured = if render {
             self.render(&url).await?
         } else {
             self.http.capture(&url).await?
         };
-        self.commit(captured)
+        self.commit(captured, beacon)
     }
 
     #[cfg(feature = "render")]
@@ -102,7 +146,11 @@ impl Node {
     }
 
     /// Sign, store and log a capture, then compare it with the previous one.
-    pub fn commit(&self, c: Captured) -> Result<Outcome> {
+    pub fn commit(
+        &self,
+        c: Captured,
+        beacon: Option<witness_core::beacon::Beacon>,
+    ) -> Result<Outcome> {
         let norm = self.normalizer.normalize(
             &c.final_url,
             c.content_type.as_deref(),
@@ -125,6 +173,7 @@ impl Node {
             server_ip: c.server_ip,
             vantage: self.config.vantage(),
             witness: self.key.public(),
+            beacon,
         };
         let signed = attestation.sign(&self.key)?;
 
@@ -192,6 +241,14 @@ impl Node {
             summary: summary.clone(),
         };
         self.store.record_change(&row)?;
+        if silent {
+            self.raise_alert(
+                witness_core::net::AlertKind::SilentEdit,
+                Some(&b.url),
+                summary.clone(),
+                vec![prev.id, cur.id],
+            )?;
+        }
         Ok(Some(ChangeInfo {
             summary,
             silent,
@@ -233,19 +290,34 @@ impl Node {
     /// Build a bundle proving a record's inclusion in the current log.
     pub fn bundle(&self, rec: &Record, with_content: bool) -> Result<Bundle> {
         let leaves = self.store.leaves()?;
-        let head = self
+        // Prefer the largest tree head other witnesses have cosigned; the
+        // latest head is usually too new to have cosignatures yet.
+        let cosigned = self
             .store
-            .latest_tree_head()?
-            .ok_or_else(|| anyhow!("log is empty"))?;
+            .cosigned_sizes(&self.key.public())?
+            .into_iter()
+            .filter(|(size, _)| *size > rec.leaf_index && *size as usize <= leaves.len())
+            .find_map(|(size, _)| self.store.tree_head_at(size).ok().flatten())
+            .filter(|h| !self.store.cosigs_for(h).unwrap_or_default().is_empty());
+        let head = match cosigned {
+            Some(h) => h,
+            None => self
+                .store
+                .latest_tree_head()?
+                .ok_or_else(|| anyhow!("log is empty"))?,
+        };
         let size = head.head.size as usize;
         let proof = merkle::inclusion_proof(&leaves[..size], rec.leaf_index as usize)
             .ok_or_else(|| anyhow!("record is not in the latest tree head"))?;
         let mut b = Bundle::new(rec.signed.clone());
+        let cosignatures = self.store.cosigs_for(&head)?;
         b.inclusion = Some(witness_core::bundle::Inclusion {
             leaf_index: rec.leaf_index,
             proof,
             tree_head: head,
+            cosignatures,
         });
+        self.attach_anchor(&mut b, rec.leaf_index)?;
         if with_content {
             let a = &rec.signed.attestation;
             let get = |d: &Digest| -> Result<Option<String>> {
