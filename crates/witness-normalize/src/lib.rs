@@ -279,12 +279,14 @@ mod tests {
         let out = n.normalize(&url, Some("text/html"), PAGE.as_bytes(), 0);
         assert!(!out.text.contains("A. Writer"));
         assert_ne!(out.commitment.profile, profile(None));
-        assert!(Normalizer::new(vec![SiteRules {
-            host: "x".into(),
-            remove: vec!["[[".into()],
-            root: None
-        }])
-        .is_err());
+        assert!(
+            Normalizer::new(vec![SiteRules {
+                host: "x".into(),
+                remove: vec!["[[".into()],
+                root: None
+            }])
+            .is_err()
+        );
     }
 
     #[test]

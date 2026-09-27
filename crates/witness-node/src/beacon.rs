@@ -1,14 +1,14 @@
 //! Fetching drand beacons. Beacons verify offline, so they are also shared
 //! over gossip: a node without drand access can use one a peer fetched.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use witness_core::beacon::{self, Beacon, QUICKNET_CHAIN_HASH};
 use witness_core::net::Gossip;
-use witness_core::{now_ms, Digest};
+use witness_core::{Digest, now_ms};
 
-use crate::httpc::join;
 use crate::Node;
+use crate::httpc::join;
 
 #[derive(Deserialize)]
 struct DrandResponse {

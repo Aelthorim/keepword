@@ -85,20 +85,15 @@ pub fn mask_now(s: &str, fetched_at_ms: i64) -> Cow<'_, str> {
             Some(off) => (t - off - now).abs() <= ZONED_WINDOW_S,
             None => sec.is_some() && naive_is_now(t, now),
         };
-        if hit {
-            "<now>".to_string()
-        } else {
-            whole
-        }
+        if hit { "<now>".to_string() } else { whole }
     });
-    let s = match s {
+    match s {
         Cow::Borrowed(b) => EU.replace_all(b, |c: &Captures<'_>| eu(c, now)),
         Cow::Owned(o) => Cow::Owned(
             EU.replace_all(&o, |c: &Captures<'_>| eu(c, now))
                 .into_owned(),
         ),
-    };
-    s
+    }
 }
 
 fn eu(c: &Captures<'_>, now: i64) -> String {

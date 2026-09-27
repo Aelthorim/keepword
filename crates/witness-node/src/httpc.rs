@@ -6,9 +6,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use serde::de::DeserializeOwned;
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use witness_capture::netpolicy::PublicOnlyResolver;
 
 pub const MAX_RESPONSE: usize = 8 * 1024 * 1024;

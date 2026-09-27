@@ -9,8 +9,8 @@
 use std::fs;
 
 use url::Url;
-use witness_normalize::diff::{self, Disclosure};
 use witness_normalize::Normalizer;
+use witness_normalize::diff::{self, Disclosure};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Expect {
@@ -96,8 +96,14 @@ fn news_de() {
                     ("div-gpt-ad-1695812-2", "div-gpt-ad-1695899-2"),
                     ("app.css?v=20260927", "app.css?v=20260928"),
                     ("sig=9f2c", "sig=77aa"),
-                    ("Steuerschätzung: Weniger Einnahmen", "Wetter: Sturm im Norden"),
-                    ("Wir verwenden Cookies.", "Wir und unsere 312 Partner verwenden Cookies."),
+                    (
+                        "Steuerschätzung: Weniger Einnahmen",
+                        "Wetter: Sturm im Norden",
+                    ),
+                    (
+                        "Wir verwenden Cookies.",
+                        "Wir und unsere 312 Partner verwenden Cookies.",
+                    ),
                     ("utm_source=intern", "utm_source=startseite"),
                     ("Das könnte Sie auch interessieren", "Empfehlungen für Sie"),
                 ],
@@ -112,19 +118,31 @@ fn news_de() {
             },
             Variant {
                 name: "quote removed",
-                replace: &[("„Das ist ein Haushalt der verpassten Chancen“, sagte die Fraktionschefin.", "")],
+                replace: &[(
+                    "„Das ist ein Haushalt der verpassten Chancen“, sagte die Fraktionschefin.",
+                    "",
+                )],
                 later_s: 3600,
                 expect: Expect::Silent,
             },
             Variant {
                 name: "edit with new Stand line",
-                replace: &[("48 Milliarden", "52 Milliarden"), ("Stand: 27.09.2026 10:15 Uhr", "Stand: 27.09.2026 11:40 Uhr")],
+                replace: &[
+                    ("48 Milliarden", "52 Milliarden"),
+                    ("Stand: 27.09.2026 10:15 Uhr", "Stand: 27.09.2026 11:40 Uhr"),
+                ],
                 later_s: 3600,
                 expect: Expect::Disclosed,
             },
             Variant {
                 name: "edit with JSON-LD dateModified",
-                replace: &[("48 Milliarden", "52 Milliarden"), ("\"dateModified\":\"2026-09-27T10:15:00+02:00\"", "\"dateModified\":\"2026-09-27T11:40:00+02:00\"")],
+                replace: &[
+                    ("48 Milliarden", "52 Milliarden"),
+                    (
+                        "\"dateModified\":\"2026-09-27T10:15:00+02:00\"",
+                        "\"dateModified\":\"2026-09-27T11:40:00+02:00\"",
+                    ),
+                ],
                 later_s: 3600,
                 expect: Expect::Disclosed,
             },
@@ -139,7 +157,10 @@ fn news_de() {
             },
             Variant {
                 name: "headline changed",
-                replace: &[("<h1 class=\"article__headline\">Bundestag beschließt Haushalt 2027</h1>", "<h1 class=\"article__headline\">Bundestag beschließt umstrittenen Haushalt 2027</h1>")],
+                replace: &[(
+                    "<h1 class=\"article__headline\">Bundestag beschließt Haushalt 2027</h1>",
+                    "<h1 class=\"article__headline\">Bundestag beschließt umstrittenen Haushalt 2027</h1>",
+                )],
                 later_s: 3600,
                 expect: Expect::Silent,
             },

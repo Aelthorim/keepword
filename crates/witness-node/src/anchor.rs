@@ -1,14 +1,14 @@
 //! Anchoring tree heads in Bitcoin through OpenTimestamps calendars.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
-use witness_core::bundle::{anchor_digest, Anchor, Bundle, Report, Status};
+use witness_core::bundle::{Anchor, Bundle, Report, Status, anchor_digest};
 use witness_core::now_ms;
 use witness_core::ots::{self, Attestation, DetachedTimestamp};
 use witness_store::net::AnchorRow;
 
-use crate::httpc::{join, status_of, Http};
 use crate::Node;
+use crate::httpc::{Http, join, status_of};
 
 const OTS_ACCEPT: &str = "application/vnd.opentimestamps.v1";
 const MAX_OTS: usize = 64 * 1024;

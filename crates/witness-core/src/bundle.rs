@@ -4,8 +4,8 @@
 //! trusting the witness's server: the signed attestation, its inclusion proof
 //! against a signed tree head, and optionally the captured bytes.
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use serde::{Deserialize, Serialize};
 
 use sha2::{Digest as _, Sha256};
@@ -14,7 +14,7 @@ use crate::attestation::SignedAttestation;
 use crate::net::{Cosignature, TlsnReceipt};
 use crate::statement::Signed;
 use crate::sth::SignedTreeHead;
-use crate::{merkle, ots, Digest, Error};
+use crate::{Digest, Error, merkle, ots};
 
 pub const FORMAT: &str = "witness-bundle/1";
 

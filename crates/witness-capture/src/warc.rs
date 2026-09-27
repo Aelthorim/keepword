@@ -5,7 +5,7 @@
 //! demand from the attestation and the header/body blobs. Record IDs derive
 //! from the attestation ID, so the export is deterministic.
 
-use witness_core::{format_ms, SignedAttestation};
+use witness_core::{SignedAttestation, format_ms};
 
 fn uuid_urn(seed: &[u8; 32], n: u8) -> String {
     let mut b = [0u8; 16];

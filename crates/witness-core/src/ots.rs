@@ -67,7 +67,7 @@ impl Op {
                 ripemd::Ripemd160::digest(msg).to_vec()
             }
             Op::Keccak256 => {
-                return Err(Error::Malformed("keccak256 timestamps are not supported"))
+                return Err(Error::Malformed("keccak256 timestamps are not supported"));
             }
             Op::Append(a) => [msg, a].concat(),
             Op::Prepend(p) => [p.as_slice(), msg].concat(),
@@ -465,9 +465,11 @@ mod tests {
         assert_eq!(back.to_bytes(), bytes);
         let claims = back.timestamp.claims();
         assert_eq!(claims.len(), 2);
-        assert!(claims
-            .iter()
-            .all(|c| matches!(c.attestation, Attestation::Pending { .. })));
+        assert!(
+            claims
+                .iter()
+                .all(|c| matches!(c.attestation, Attestation::Pending { .. }))
+        );
     }
 
     #[test]

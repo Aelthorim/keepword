@@ -7,10 +7,10 @@ pub mod net;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use witness_core::{
-    merkle, CaptureMethod, Digest, Keypair, SignedAttestation, SignedTreeHead, TreeHead,
+    CaptureMethod, Digest, Keypair, SignedAttestation, SignedTreeHead, TreeHead, merkle,
 };
 
 pub use blobs::BlobStore;
@@ -166,7 +166,7 @@ impl Store {
             other => {
                 return Err(StoreError::Corrupt(format!(
                     "index schema version {other} is newer than this build supports"
-                )))
+                )));
             }
         }
         Ok(Store {

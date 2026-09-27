@@ -4,17 +4,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use witness_core::bundle::Status;
-use witness_core::{format_ms, now_ms, target, Digest};
+use witness_core::{Digest, format_ms, now_ms, target};
 use witness_normalize::diff::{self, OpTag};
 use witness_store::Record;
 
-use crate::{method_name, Node};
+use crate::{Node, method_name};
 
 // ---------------------------------------------------------------- scheduler
 
@@ -454,7 +454,9 @@ fn verdict_html(v: &crate::consensus::VerdictView) -> String {
     use witness_core::quorum::Verdict;
     let mut b = String::from("<h2>Across witnesses</h2>");
     let group_rows = |groups: &[witness_core::quorum::Group]| {
-        let mut t = String::from("<table><tr><th>Normalized content</th><th>Witnesses</th><th>Independent networks</th></tr>");
+        let mut t = String::from(
+            "<table><tr><th>Normalized content</th><th>Witnesses</th><th>Independent networks</th></tr>",
+        );
         for g in groups {
             t.push_str(&format!(
                 "<tr><td class=mono>{}</td><td>{}</td><td>{}</td></tr>",

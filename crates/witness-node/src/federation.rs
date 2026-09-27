@@ -16,21 +16,21 @@
 use std::collections::HashSet;
 use std::net::IpAddr;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use witness_core::assign::{self, Candidate, DiversityPolicy};
 use witness_core::beacon::{self, epoch_of};
 use witness_core::net::{
-    payload_digest, Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope,
-    WatchRequest,
+    Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope, WatchRequest,
+    payload_digest,
 };
 use witness_core::statement::Signed;
-use witness_core::{merkle, now_ms, target, Digest, SignedAttestation, SignedTreeHead, WitnessKey};
+use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, merkle, now_ms, target};
 use witness_store::net::Peer;
 
+use crate::Node;
 use crate::httpc::{join, status_of};
 use crate::vantage::{self, Location};
-use crate::Node;
 
 /// Longest a watch request may run.
 pub const MAX_REQUEST_MS: i64 = 30 * 86_400_000;
@@ -588,7 +588,9 @@ impl Node {
             .map(|id| merkle::leaf_hash(id.as_bytes()))
             .collect();
         if merkle::root(&leaves) != head.head.root {
-            bail!("tree head does not match the log's leaves; the peer rewrote history or served bad leaves");
+            bail!(
+                "tree head does not match the log's leaves; the peer rewrote history or served bad leaves"
+            );
         }
         if !new_ids.is_empty() {
             self.store.peer_extend_log(&peer.key, &new_ids, &head)?;

@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use witness_core::bundle::Status;
-use witness_node::config::Config;
 use witness_node::Node;
-use witness_tlsn::{capture_with, roots_from, Limits, Notary, VerifierService};
+use witness_node::config::Config;
+use witness_tlsn::{Limits, Notary, VerifierService, capture_with, roots_from};
 
 /// A TLS 1.2 web server with TLSNotary's test certificate for
 /// `test-server.io`, serving one page.
@@ -136,7 +136,8 @@ async fn notarized_capture_verifies() {
 
     // The receipt also went out over the verifier's gossip.
     let out = verifier.store.gossip_since(0, 100).unwrap();
-    assert!(out
-        .iter()
-        .any(|(_, g)| matches!(g, witness_core::net::Gossip::TlsnReceipt(_))));
+    assert!(
+        out.iter()
+            .any(|(_, g)| matches!(g, witness_core::net::Gossip::TlsnReceipt(_)))
+    );
 }

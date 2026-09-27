@@ -10,7 +10,7 @@ use std::time::Duration;
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use futures::StreamExt;
 use url::Url;
-use witness_core::{now_ms, CaptureMethod};
+use witness_core::{CaptureMethod, now_ms};
 
 use crate::{CaptureError, Captured};
 

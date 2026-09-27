@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use witness_core::TreeHead;
 use witness_core::bundle::Status;
 use witness_core::net::{AlertKind, Gossip};
 use witness_core::quorum::Verdict;
-use witness_core::TreeHead;
-use witness_node::config::Config;
 use witness_node::Node;
+use witness_node::config::Config;
 
 /// Serves /page/*; clients whose User-Agent contains "cloaked" get a
 /// different version.
@@ -227,12 +227,14 @@ async fn four_witnesses() {
     .sign(&b_node.key)
     .unwrap();
     assert!(nodes[0].node.ingest(Gossip::TreeHead(forged)).unwrap());
-    assert!(nodes[0]
-        .node
-        .store
-        .equivocating_logs()
-        .unwrap()
-        .contains(&b_key));
+    assert!(
+        nodes[0]
+            .node
+            .store
+            .equivocating_logs()
+            .unwrap()
+            .contains(&b_key)
+    );
     sync_all(&nodes[..1], 1).await;
     tokio::time::sleep(Duration::from_millis(10)).await;
     sync_all(&nodes[2..], 1).await;

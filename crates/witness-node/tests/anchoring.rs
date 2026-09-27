@@ -14,8 +14,8 @@ use tokio::net::TcpListener;
 use witness_core::beacon::Beacon;
 use witness_core::bundle::Status;
 use witness_core::ots::{self, Attestation, Op, Timestamp};
-use witness_node::config::Config;
 use witness_node::Node;
+use witness_node::config::Config;
 
 const SIG_123: &str = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";
 const HEIGHT: u64 = 800_000;

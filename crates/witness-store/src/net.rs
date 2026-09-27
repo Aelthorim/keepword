@@ -4,16 +4,16 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 use witness_core::beacon::Beacon;
 use witness_core::net::{
     Alert, Cosignature, Descriptor, Gossip, Observation, TlsnReceipt, WatchRequest,
 };
 use witness_core::statement::Signed;
-use witness_core::{merkle, Digest, SignedAttestation, SignedTreeHead, WitnessKey};
+use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, merkle};
 
-use crate::{digest, Result, Store, StoreError};
+use crate::{Result, Store, StoreError, digest};
 
 pub(crate) const SCHEMA_V2: &str = r#"
 ALTER TABLE watch ADD COLUMN request_id BLOB;

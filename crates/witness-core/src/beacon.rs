@@ -7,7 +7,7 @@
 //! carrier. Witness uses the `quicknet` chain: unchained, one round every
 //! three seconds.
 
-use drand_verify::{derive_randomness, G2PubkeyRfc, Pubkey};
+use drand_verify::{G2PubkeyRfc, Pubkey, derive_randomness};
 use serde::{Deserialize, Serialize};
 
 use crate::{Digest, Error};

@@ -15,10 +15,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use witness_core::net::Descriptor;
 use witness_core::statement::Signed;
-use witness_core::{merkle, now_ms, Digest, SignedAttestation};
+use witness_core::{Digest, SignedAttestation, merkle, now_ms};
 
-use crate::federation::{GossipPage, IdList, PushRequest};
 use crate::Node;
+use crate::federation::{GossipPage, IdList, PushRequest};
 
 pub fn router(node: Arc<Node>) -> Router {
     Router::new()

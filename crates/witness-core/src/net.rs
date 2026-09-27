@@ -411,8 +411,10 @@ mod tests {
         let g2 = Gossip::Equivocation { a: b, b: a.clone() };
         assert_eq!(g1.id(), g2.id());
         g1.verify().unwrap();
-        assert!(Gossip::Equivocation { a: a.clone(), b: a }
-            .verify()
-            .is_err());
+        assert!(
+            Gossip::Equivocation { a: a.clone(), b: a }
+                .verify()
+                .is_err()
+        );
     }
 }

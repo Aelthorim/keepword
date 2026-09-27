@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use witness_core::{target, WitnessKey};
+use witness_core::{WitnessKey, target};
 use witness_node::Node;
-use witness_tlsn::{capture_with, connect_server, mozilla_roots, Limits, Notary, VerifierService};
+use witness_tlsn::{Limits, Notary, VerifierService, capture_with, connect_server, mozilla_roots};
 
 #[derive(Parser)]
 #[command(

@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use witness_core::bundle::{Bundle, Content, Status};
-use witness_node::config::Config;
 use witness_node::Node;
+use witness_node::config::Config;
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Policy</title>
 <script>window.csrf="TOKEN";</script></head><body>

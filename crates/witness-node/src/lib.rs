@@ -16,13 +16,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use url::Url;
 use witness_capture::{Captured, HttpCapturer};
 use witness_core::bundle::{Bundle, Content, Report, Status};
 use witness_core::{
-    format_ms, merkle, now_ms, target, Attestation, CaptureMethod, Digest, Keypair, SignedTreeHead,
+    Attestation, CaptureMethod, Digest, Keypair, SignedTreeHead, format_ms, merkle, now_ms, target,
 };
 use witness_normalize::diff::{self, Change};
 use witness_normalize::{Normalizer, SiteRules};

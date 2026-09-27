@@ -8,9 +8,9 @@ use reqwest::header::LOCATION;
 use reqwest::redirect::Policy;
 use sha2::{Digest as _, Sha256};
 use url::Url;
-use witness_core::{now_ms, CaptureMethod};
+use witness_core::{CaptureMethod, now_ms};
 
-use crate::netpolicy::{is_public, PublicOnlyResolver};
+use crate::netpolicy::{PublicOnlyResolver, is_public};
 use crate::{CaptureError, Captured};
 
 #[derive(Clone, Debug)]

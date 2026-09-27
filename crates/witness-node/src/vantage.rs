@@ -6,9 +6,9 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use witness_core::WitnessKey;
 use witness_core::net::Observation;
 use witness_core::statement::Signed;
-use witness_core::WitnessKey;
 
 /// IP-range → (ASN, country) table in the iptoasn.com TSV format:
 /// `range_start  range_end  AS_number  country_code  AS_description`.

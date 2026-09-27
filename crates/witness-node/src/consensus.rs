@@ -6,7 +6,7 @@ use serde::Serialize;
 use witness_core::net::{Alert, AlertKind, Gossip};
 use witness_core::quorum::{self, Evaluation, QuorumPolicy, Verdict};
 use witness_core::statement::Signed;
-use witness_core::{now_ms, Digest, SignedAttestation};
+use witness_core::{Digest, SignedAttestation, now_ms};
 
 use crate::Node;
 

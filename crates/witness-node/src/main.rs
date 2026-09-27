@@ -2,12 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use witness_core::bundle::{Bundle, Report, Status};
 use witness_core::{format_ms, merkle, now_ms, target};
 use witness_node::config::{Config, ContentConfig, Retain, VantageConfig};
-use witness_node::{method_name, parse_time, Node, Outcome};
+use witness_node::{Node, Outcome, method_name, parse_time};
 use witness_normalize::diff;
 
 #[derive(Parser)]
@@ -555,7 +555,9 @@ async fn run(cli: Cli) -> Result<bool> {
             let node = Node::open(&dir)?;
             let url = target::canonical_url(&url)?;
             let (blobs, rows) = node.store.purge(url.as_str(), forget)?;
-            println!("deleted {blobs} blobs and {rows} attestation records for {url}; the log is unchanged");
+            println!(
+                "deleted {blobs} blobs and {rows} attestation records for {url}; the log is unchanged"
+            );
         }
         Cmd::Serve {
             addr,
@@ -646,7 +648,12 @@ async fn run(cli: Cli) -> Result<bool> {
                     } else {
                         println!(
                             "synced {}/{} peers: {} new leaves, {} new attestations, {} messages in, {} out",
-                            r.synced, r.peers, r.new_leaves, r.new_attestations, r.gossip_in, r.gossip_out
+                            r.synced,
+                            r.peers,
+                            r.new_leaves,
+                            r.new_attestations,
+                            r.gossip_in,
+                            r.gossip_out
                         );
                         for (who, e) in &r.errors {
                             println!("  {who}: {e}");
