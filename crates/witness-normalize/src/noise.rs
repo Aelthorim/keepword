@@ -89,6 +89,12 @@ const TRACKING_PARAMS: &[&str] = &[
     "wt_zmc",
     "at_medium",
     "at_campaign",
+    // Cache busters.
+    "_",
+    "cb",
+    "cachebust",
+    "cachebuster",
+    "nocache",
 ];
 
 fn is_tracking(k: &str) -> bool {
@@ -166,23 +172,56 @@ const NOISE_TOKENS: &[&str] = &[
     "sharing",
     "social",
     "related",
+    "relatedposts",
     "recommended",
     "recommendations",
     "trending",
     "popular",
     "most-read",
+    // User comments are not the publisher's content.
+    "comment",
+    "comments",
+    "kommentare",
+];
+
+/// Consent-management platforms and ad networks whose ids and classes are
+/// recognisable by prefix (`onetrust-banner-sdk`, `sp_message_container_123`).
+const NOISE_PREFIXES: &[&str] = &[
+    "onetrust",
+    "ot-sdk",
+    "usercentrics",
+    "uc-banner",
+    "cybotcookiebot",
+    "cookiebot",
+    "didomi",
+    "sp_message",
+    "sp_veil",
+    "qc-cmp",
+    "truste",
+    "cmpbox",
+    "cmpwrapper",
+    "borlabs-cookie",
+    "cmplz",
+    "gdpr",
+    "taboola",
+    "outbrain",
+    "google_ads",
+    "disqus",
+    "jp-relatedposts",
+    "div-gpt-ad",
+    "adsbygoogle",
 ];
 
 /// Whether a class or id marks advertising, consent banners, share widgets
-/// and similar per-visit noise. Matching is by whole token, so `header`
-/// doesn't match `ad`.
+/// and similar per-visit noise. Matching is by whole token (so `header`
+/// doesn't match `ad`), or by known vendor prefix.
 pub fn is_noise_token_list(value: &str) -> bool {
-    value
-        .split(|c: char| c.is_whitespace() || c == '-' || c == '_')
-        .any(|t| NOISE_TOKENS.contains(&t.to_ascii_lowercase().as_str()))
-        || value
-            .split_whitespace()
-            .any(|t| NOISE_TOKENS.contains(&t.to_ascii_lowercase().as_str()))
+    value.split_whitespace().any(|word| {
+        let w = word.to_ascii_lowercase();
+        NOISE_TOKENS.contains(&w.as_str())
+            || NOISE_PREFIXES.iter().any(|p| w.starts_with(p))
+            || w.split(['-', '_']).any(|t| NOISE_TOKENS.contains(&t))
+    })
 }
 
 #[cfg(test)]
@@ -236,5 +275,10 @@ mod tests {
         assert!(is_noise_token_list("most-read"));
         assert!(!is_noise_token_list("header shadow"));
         assert!(!is_noise_token_list("article-body"));
+        assert!(is_noise_token_list("onetrust-consent-sdk"));
+        assert!(is_noise_token_list("sp_message_container_893412"));
+        assert!(is_noise_token_list("usercentrics-root"));
+        assert!(is_noise_token_list("CybotCookiebotDialog"));
+        assert!(!is_noise_token_list("adress")); // German spelling, not "ad"
     }
 }

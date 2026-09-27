@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use scraper::{ElementRef, Html, Node, Selector};
 use url::Url;
 
+use crate::clock::mask_now;
 use crate::noise::{clean_image, clean_link, clean_text, is_noise_token_list};
 use crate::rules::SiteRules;
 
@@ -58,11 +59,13 @@ struct Walker<'a> {
     out: Vec<String>,
     buf: String,
     pending: Vec<String>,
+    fetched_at_ms: i64,
 }
 
 impl<'a> Walker<'a> {
     fn flush(&mut self, kind: &str) {
-        let text = clean_text(&self.buf);
+        let cleaned = clean_text(&self.buf);
+        let text = mask_now(&cleaned, self.fetched_at_ms);
         self.buf.clear();
         if !text.is_empty() {
             self.out.push(format!("{kind}: {text}"));
@@ -196,7 +199,12 @@ fn json_ld(doc: &Html, key: &str) -> Option<String> {
         .map(|s| clean_text(&s))
 }
 
-pub fn normalize(html: &str, base: &Url, rules: Option<&SiteRules>) -> Vec<String> {
+pub fn normalize(
+    html: &str,
+    base: &Url,
+    rules: Option<&SiteRules>,
+    fetched_at_ms: i64,
+) -> Vec<String> {
     let doc = Html::parse_document(html);
     let mut lines = Vec::new();
 
@@ -246,6 +254,7 @@ pub fn normalize(html: &str, base: &Url, rules: Option<&SiteRules>) -> Vec<Strin
         out: lines,
         buf: String::new(),
         pending: Vec::new(),
+        fetched_at_ms,
     };
     w.walk(root, "text");
     w.flush("text");

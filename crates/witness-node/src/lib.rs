@@ -103,9 +103,12 @@ impl Node {
 
     /// Sign, store and log a capture, then compare it with the previous one.
     pub fn commit(&self, c: Captured) -> Result<Outcome> {
-        let norm = self
-            .normalizer
-            .normalize(&c.final_url, c.content_type.as_deref(), &c.body);
+        let norm = self.normalizer.normalize(
+            &c.final_url,
+            c.content_type.as_deref(),
+            &c.body,
+            c.fetched_at_ms,
+        );
         let attestation = Attestation {
             url: c.requested_url.to_string(),
             final_url: c.final_url.to_string(),
@@ -316,6 +319,7 @@ impl Node {
             &url,
             a.content_type.as_deref(),
             &body,
+            a.fetched_at_ms,
         );
         if out.commitment.hash == n.hash {
             report.push(
