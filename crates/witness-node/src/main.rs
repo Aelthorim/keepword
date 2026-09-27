@@ -154,11 +154,29 @@ enum Cmd {
         #[command(subcommand)]
         cmd: AnchorCmd,
     },
+    /// Read or change witness.toml.
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
     /// Fetch and verify a drand beacon.
     Beacon {
         /// Round number (default: latest).
         round: Option<u64>,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print the whole configuration.
+    Show,
+    /// Print one setting, e.g. `network.endpoint`.
+    Get { key: String },
+    /// Change a setting. VALUE is a TOML value (`true`, `3`, `["a"]`) or a
+    /// plain string.
+    Set { key: String, value: String },
+    /// Reset an optional setting to unset.
+    Unset { key: String },
 }
 
 #[derive(Subcommand)]
@@ -171,6 +189,8 @@ enum NetCmd {
     Sync,
     /// Summary of this node's view of the network.
     Status,
+    /// Look an IP address up in the configured IP-to-ASN table.
+    Lookup { ip: std::net::IpAddr },
 }
 
 #[derive(Subcommand)]
@@ -660,6 +680,16 @@ async fn run(cli: Cli) -> Result<bool> {
                         }
                     }
                 }
+                NetCmd::Lookup { ip } => {
+                    let db = node
+                        .asn_db
+                        .as_ref()
+                        .context("no IP-to-ASN table configured (quorum.asn_db)")?;
+                    match db.lookup(ip) {
+                        Some((asn, country)) => println!("{asn} {country}"),
+                        None => bail!("{ip} is not in the IP-to-ASN table"),
+                    }
+                }
                 NetCmd::Status => {
                     let now = now_ms();
                     let epoch = witness_core::beacon::epoch_of(now);
@@ -803,6 +833,25 @@ async fn run(cli: Cli) -> Result<bool> {
                         out.display(),
                         PathBuf::from(ots).display()
                     );
+                }
+            }
+        }
+        Cmd::Config { cmd } => {
+            let mut cfg = Config::load(&dir)?;
+            match cmd {
+                ConfigCmd::Show => print!("{}", toml::to_string_pretty(&cfg)?),
+                ConfigCmd::Get { key } => match cfg.get_path(&key)? {
+                    serde_json::Value::String(s) => println!("{s}"),
+                    serde_json::Value::Null => {}
+                    v => println!("{v}"),
+                },
+                ConfigCmd::Set { key, value } => {
+                    cfg.set_path(&key, Some(&value))?;
+                    cfg.save(&dir)?;
+                }
+                ConfigCmd::Unset { key } => {
+                    cfg.set_path(&key, None)?;
+                    cfg.save(&dir)?;
                 }
             }
         }

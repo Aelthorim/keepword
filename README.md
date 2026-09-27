@@ -19,7 +19,23 @@ the captures existed *before* a later point.
 
 The design, threat model and formats are in [docs/DESIGN.md](docs/DESIGN.md).
 
-## Quick start
+## Install
+
+On a server (Debian, Ubuntu, Fedora, RHEL-likes, Arch, openSUSE, Alpine):
+
+```sh
+git clone https://github.com/aelthorim/witness.git && cd witness
+sudo sh scripts/install.sh --domain witness.example.org --caddy
+```
+
+This builds Witness, creates a sandboxed `witness` service with its own user,
+fetches the IP-to-ASN table and refreshes it weekly, detects the node's
+network, and puts the peer API behind Caddy with automatic TLS. Re-run it to
+upgrade. There is also a container image (`Dockerfile`,
+`packaging/docker/compose.yaml`). Both are described in
+[docs/INSTALL.md](docs/INSTALL.md).
+
+## Quick start (from source)
 
 ```sh
 cargo build --release
@@ -83,12 +99,13 @@ VERIFIED
 | `log head\|consistency OLD [NEW]\|audit` | Tree head, consistency proofs, full self-audit |
 | `purge URL [--forget]` | Erase stored content (and records); the log stays valid |
 | `serve [--addr A] [--api-addr B] [--watch] [--anchor]` | Web UI (private), peer API (public), scheduler, federation and anchoring loops |
-| `net add-peer URL\|peers\|sync\|status` | Federation with other witnesses |
+| `net add-peer URL\|peers\|sync\|status\|lookup IP` | Federation with other witnesses; IP-to-ASN lookups |
 | `request URL [--every 1h] [--for 7days]` | Ask the network to watch a URL |
 | `verdict URL` | What independent witnesses agree the URL served |
 | `alerts` | Cloaking, silent-edit and equivocation alerts |
 | `anchor submit\|upgrade\|list\|export` | Bitcoin anchoring via OpenTimestamps |
 | `beacon [ROUND]` | Fetch and verify a drand beacon |
+| `config show\|get\|set\|unset` | Read or change `witness.toml`, with validation |
 
 `--at` takes RFC 3339 or `YYYY-MM-DD` (end of that day, UTC). IDs can be
 abbreviated. `--json` gives machine-readable output.
@@ -162,6 +179,9 @@ crates/witness-store      blob store, SQLite index, log, watchlist
 crates/witness-node       the `witness` binary: CLI, peer API, federation, web UI
 crates/witness-tlsn       TLSNotary proof tier (separate workspace)
 docs/DESIGN.md            threat model, formats, network design, roadmap
+docs/INSTALL.md           production installation (installer, container)
+scripts/install.sh        the installer
+packaging/docker/         container entrypoint and compose file
 ```
 
 ## Development
