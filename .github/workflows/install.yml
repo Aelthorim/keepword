@@ -54,7 +54,7 @@ jobs:
             prep: dnf install -y -q systemd procps-ng
             init: systemd
           - image: archlinux:latest
-            prep: pacman -Sy --noconfirm --needed systemd procps-ng >/dev/null
+            prep: pacman -Syu --noconfirm --needed systemd procps-ng >/dev/null
             init: systemd
           - image: alpine:3.20
             prep: apk add --no-cache -q openrc curl procps

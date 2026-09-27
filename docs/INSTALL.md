@@ -19,7 +19,9 @@ sudo sh scripts/install.sh --domain witness.example.org --caddy
 That single command:
 
 1. installs build dependencies with the system package manager (and Caddy
-   when you pass `--caddy`);
+   when you pass `--caddy`). On Arch this is a full `pacman -Syu`, because
+   Arch doesn't support partial upgrades; use `--no-packages` to manage
+   packages yourself;
 2. installs Rust into `/opt/witness` if the system Rust is missing or too
    old, verifying the `rustup-init` checksum;
 3. builds `witness` in release mode and installs it to `/usr/local/bin`;

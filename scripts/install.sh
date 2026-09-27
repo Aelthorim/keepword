@@ -308,7 +308,8 @@ case "$PKG" in
         [ "$RENDER" -eq 0 ] || pkgs="$pkgs chromium"
         [ "$CADDY" -eq 0 ] || pkgs="$pkgs caddy"
         # shellcheck disable=SC2086
-        pacman -Sy --noconfirm --needed $pkgs >/dev/null ;;
+        # Arch only supports full upgrades; -Sy alone can break the system.
+        pacman -Syu --noconfirm --needed $pkgs >/dev/null ;;
     zypper)
         pkgs="ca-certificates curl git gcc gcc-c++ make pkg-config gzip util-linux shadow"
         [ "$RENDER" -eq 0 ] || pkgs="$pkgs chromium"
