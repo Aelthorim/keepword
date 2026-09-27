@@ -227,12 +227,76 @@ impl Config {
             .with_context(|| format!("reading {} (run `witness init` first?)", path.display()))?;
         let cfg: Config =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        if let Some(c) = &cfg.vantage.country {
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if let Some(c) = &self.vantage.country {
             if c.len() != 2 || !c.chars().all(|ch| ch.is_ascii_uppercase()) {
                 bail!("vantage.country must be an upper-case ISO 3166 code like \"DE\"");
             }
         }
-        Ok(cfg)
+        for (name, url) in [
+            ("network.endpoint", self.network.endpoint.as_deref()),
+            ("beacon.drand_url", self.beacon.drand()),
+            ("anchor.esplora_url", self.anchor.esplora()),
+        ] {
+            if let Some(u) = url {
+                let ok =
+                    url::Url::parse(u).is_ok_and(|u| u.scheme() == "http" || u.scheme() == "https");
+                if !ok {
+                    bail!("{name} must be an http(s) URL, got {u:?}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a setting by dotted path, e.g. `network.endpoint`.
+    pub fn get_path(&self, key: &str) -> Result<serde_json::Value> {
+        let mut v = serde_json::to_value(self)?;
+        for part in key.split('.') {
+            v = v
+                .get(part)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("no setting {key:?}"))?;
+        }
+        Ok(v)
+    }
+
+    /// Set a setting by dotted path. `raw` is read as a TOML value
+    /// (`true`, `3`, `["a", "b"]`, `"text"`); anything that isn't one is
+    /// taken as a string. `None` unsets it. The result must still be a valid
+    /// configuration, so typos and wrong types are rejected.
+    pub fn set_path(&mut self, key: &str, raw: Option<&str>) -> Result<()> {
+        let value = match raw {
+            None => serde_json::Value::Null,
+            Some(r) => match toml::from_str::<toml::Table>(&format!("v = {r}")) {
+                Ok(mut t) => serde_json::to_value(t.remove("v").expect("parsed key"))?,
+                Err(_) => serde_json::Value::String(r.to_string()),
+            },
+        };
+        let mut root = serde_json::to_value(&*self)?;
+        let mut cur = &mut root;
+        let parts: Vec<&str> = key.split('.').collect();
+        for (i, part) in parts.iter().enumerate() {
+            let obj = cur
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("{key:?} is not a setting"))?;
+            if i + 1 == parts.len() {
+                obj.insert(part.to_string(), value);
+                break;
+            }
+            cur = obj
+                .get_mut(*part)
+                .ok_or_else(|| anyhow::anyhow!("no setting section {part:?}"))?;
+        }
+        let updated: Config =
+            serde_json::from_value(root).with_context(|| format!("invalid value for {key}"))?;
+        updated.validate()?;
+        *self = updated;
+        Ok(())
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -332,5 +396,42 @@ mod tests {
         assert!(cfg.beacon.drand().is_some());
         let off: Config = toml::from_str("[beacon]\ndrand_url = \"\"\n").unwrap();
         assert!(off.beacon.drand().is_none());
+    }
+
+    #[test]
+    fn set_and_get_paths() {
+        let mut c = Config::default();
+        c.set_path("network.endpoint", Some("https://w.example.org"))
+            .unwrap();
+        c.set_path(
+            "network.peers",
+            Some(r#"["https://a.example", "https://b.example"]"#),
+        )
+        .unwrap();
+        c.set_path("vantage.asn", Some("3320")).unwrap();
+        c.set_path("vantage.country", Some("DE")).unwrap();
+        c.set_path("network.trust_forwarded_for", Some("true"))
+            .unwrap();
+        c.set_path("content.retain", Some("normalized")).unwrap();
+        assert_eq!(c.network.endpoint.as_deref(), Some("https://w.example.org"));
+        assert_eq!(c.network.peers.len(), 2);
+        assert_eq!(c.vantage.asn, Some(3320));
+        assert!(c.network.trust_forwarded_for);
+        assert_eq!(c.content.retain, Retain::Normalized);
+        assert_eq!(c.get_path("vantage.asn").unwrap(), serde_json::json!(3320));
+
+        // Typos, wrong types and invalid values are rejected and change nothing.
+        assert!(c.set_path("network.endpont", Some("x")).is_err());
+        assert!(c.set_path("vantage.asn", Some("\"many\"")).is_err());
+        assert!(c.set_path("vantage.country", Some("de")).is_err());
+        assert!(c.set_path("network.endpoint", Some("ftp://x")).is_err());
+        assert!(c.set_path("nosuch.key", Some("1")).is_err());
+        assert_eq!(c.vantage.asn, Some(3320));
+
+        c.set_path("network.endpoint", None).unwrap();
+        assert!(c.network.endpoint.is_none());
+        // Round-trips through the file format.
+        let back: Config = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back.vantage.asn, Some(3320));
     }
 }

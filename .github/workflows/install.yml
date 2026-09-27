@@ -1,0 +1,86 @@
+name: Install
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -s sh scripts/install.sh scripts/ci/installer-smoke.sh packaging/docker/entrypoint.sh
+
+  # A real systemd host: install, run, upgrade, purge.
+  systemd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: sudo sh scripts/install.sh --source . --yes --asn 64500 --country DE --peer https://peer.example.invalid
+      - name: Service is up
+        run: |
+          systemctl is-active witness
+          curl -fsS http://127.0.0.1:8481/v1/descriptor
+          sudo -u witness WITNESS_DIR=/var/lib/witness witness net status
+          sudo test -s /var/lib/witness/ip2asn-combined.tsv   # data dir is 0750
+          systemctl is-enabled witness-asn-update.timer
+          systemd-analyze security witness.service --no-pager | tail -n 1
+      - name: Upgrade keeps the key
+        run: |
+          key() { sudo -u witness WITNESS_DIR=/var/lib/witness witness id | awk '/witness key/ {print $3}'; }
+          before=$(key)
+          sudo sh scripts/install.sh --source . --yes --retain normalized
+          test "$before" = "$(key)"
+          systemctl is-active witness
+      - name: Uninstall
+        run: |
+          sudo sh scripts/install.sh --uninstall --purge --yes
+          if id witness; then echo "user not removed"; exit 1; fi
+          test ! -e /var/lib/witness
+
+  # Fresh containers: package installation, rustup, build, service files.
+  distros:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: debian:bookworm
+            prep: apt-get update -qq && apt-get install -y -qq systemd curl >/dev/null
+            init: systemd
+          - image: fedora:41
+            prep: dnf install -y -q systemd procps-ng
+            init: systemd
+          - image: archlinux:latest
+            prep: pacman -Syu --noconfirm --needed systemd procps-ng >/dev/null
+            init: systemd
+          - image: alpine:3.20
+            prep: apk add --no-cache -q openrc curl procps
+            init: openrc
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/src:ro" "${{ matrix.image }}" \
+            sh -c '${{ matrix.prep }} && sh /src/scripts/ci/installer-smoke.sh ${{ matrix.init }}'
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t witness .
+      - name: Container starts and configures itself
+        run: |
+          docker run -d --name witness-ci -p 127.0.0.1:8481:8481 \
+            -e WITNESS_ASN=64500 -e WITNESS_COUNTRY=DE \
+            -e WITNESS_ENDPOINT=https://witness.example.invalid \
+            -e WITNESS_PEERS=https://a.example.invalid,https://b.example.invalid \
+            witness
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8481/v1/descriptor && break; sleep 2; done
+          curl -fsS http://127.0.0.1:8481/v1/descriptor | grep -q witness.example.invalid
+          test "$(docker exec witness-ci witness config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
+          docker exec witness-ci witness id
+      - if: failure()
+        run: docker logs witness-ci
