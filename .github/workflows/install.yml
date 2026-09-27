@@ -24,7 +24,7 @@ jobs:
           systemctl is-active witness
           curl -fsS http://127.0.0.1:8481/v1/descriptor
           sudo -u witness WITNESS_DIR=/var/lib/witness witness net status
-          test -s /var/lib/witness/ip2asn-combined.tsv
+          sudo test -s /var/lib/witness/ip2asn-combined.tsv   # data dir is 0750
           systemctl is-enabled witness-asn-update.timer
           systemd-analyze security witness.service --no-pager | tail -n 1
       - name: Upgrade keeps the key
@@ -73,14 +73,14 @@ jobs:
       - run: docker build -t witness .
       - name: Container starts and configures itself
         run: |
-          docker run -d --name w -p 127.0.0.1:8481:8481 \
+          docker run -d --name witness-ci -p 127.0.0.1:8481:8481 \
             -e WITNESS_ASN=64500 -e WITNESS_COUNTRY=DE \
             -e WITNESS_ENDPOINT=https://witness.example.invalid \
             -e WITNESS_PEERS=https://a.example.invalid,https://b.example.invalid \
             witness
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8481/v1/descriptor && break; sleep 2; done
           curl -fsS http://127.0.0.1:8481/v1/descriptor | grep -q witness.example.invalid
-          test "$(docker exec w witness config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
-          docker exec w witness id
+          test "$(docker exec witness-ci witness config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
+          docker exec witness-ci witness id
       - if: failure()
-        run: docker logs w
+        run: docker logs witness-ci
