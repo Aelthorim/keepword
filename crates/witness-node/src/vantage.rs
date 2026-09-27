@@ -1,5 +1,5 @@
 //! Where a witness really is: IP → ASN lookup and corroboration from
-//! observation receipts (docs/DESIGN.md §6.2).
+//! observation receipts (docs/DESIGN.md §6.3).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;

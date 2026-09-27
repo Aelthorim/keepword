@@ -1,5 +1,5 @@
 //! Quorum verdicts across witnesses, reputation, and alerts
-//! (docs/DESIGN.md §6.3, §6.8).
+//! (docs/DESIGN.md §6.5).
 
 use anyhow::Result;
 use serde::Serialize;

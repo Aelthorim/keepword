@@ -318,6 +318,20 @@ impl Node {
             cosignatures,
         });
         self.attach_anchor(&mut b, rec.leaf_index)?;
+        if let Some(receipt) = self.store.tlsn_for(&rec.id)? {
+            let received_b64 = if with_content {
+                self.store
+                    .blobs
+                    .get(&receipt.body.received_hash)?
+                    .map(|b| Content::encode(&b))
+            } else {
+                None
+            };
+            b.tlsn = Some(witness_core::bundle::TlsnEvidence {
+                receipt,
+                received_b64,
+            });
+        }
         if with_content {
             let a = &rec.signed.attestation;
             let get = |d: &Digest| -> Result<Option<String>> {

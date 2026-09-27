@@ -318,3 +318,19 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     fs::write(path, data)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_parses() {
+        let text = include_str!("../../../docs/witness.example.toml");
+        let cfg: Config = toml::from_str(text).unwrap();
+        assert_eq!(cfg.vantage.asn, Some(3320));
+        assert_eq!(cfg.rules.len(), 1);
+        assert!(cfg.beacon.drand().is_some());
+        let off: Config = toml::from_str("[beacon]\ndrand_url = \"\"\n").unwrap();
+        assert!(off.beacon.drand().is_none());
+    }
+}

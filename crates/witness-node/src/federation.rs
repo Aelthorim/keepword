@@ -169,6 +169,8 @@ impl Node {
                 self.store.beacon_insert(b)?;
                 true
             }
+            // Receipts travel for transparency; provers store their own.
+            Gossip::TlsnReceipt(r) => r.body.verified_at_ms <= now + SKEW_MS,
         };
         if accept {
             self.store.gossip_insert(&g, now)?;

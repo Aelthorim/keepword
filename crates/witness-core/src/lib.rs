@@ -9,6 +9,7 @@ pub mod beacon;
 pub mod bundle;
 pub mod encoding;
 mod hash;
+pub mod httpmsg;
 pub mod keys;
 pub mod merkle;
 pub mod net;

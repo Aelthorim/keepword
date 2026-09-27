@@ -2,8 +2,8 @@
 # to <data dir>/witness.toml.
 
 [vantage]
-# Where this node fetches from. Self-reported; peers corroborate it once the
-# network layer exists (docs/DESIGN.md §6.2).
+# Where this node fetches from. Self-reported; peers corroborate it from the
+# addresses they see (docs/DESIGN.md §6.3).
 asn = 3320
 country = "DE"
 
@@ -23,6 +23,40 @@ allow_private_addresses = false
 # normalized  headers + normalized text (diffs, no raw copy)
 # none        hashes only (edits detected, not shown)
 retain = "full"
+
+[network]
+# Public base URL of this node's /v1 API. Unset = push-only (behind NAT).
+endpoint = "https://witness.example.org"
+peers = ["https://witness.other-example.net"]
+sync_interval_secs = 60
+replication = 5            # witnesses assigned per watch request
+max_per_country = 2
+max_requests_per_requester = 50
+max_peers = 500
+# Serve raw captured content to others only for these hosts.
+serve_content_hosts = ["tagesschau.de", "bund.de"]
+trust_forwarded_for = false  # true only behind your own reverse proxy
+
+[beacon]
+drand_url = "https://api.drand.sh"   # "" to disable
+allow_insecure_seed = false          # true only for private test networks
+
+[quorum]
+window_secs = 600
+min_asns = 3
+min_dissent_asns = 2
+asn_db = "/var/lib/witness/ip2asn-combined.tsv"   # from iptoasn.com
+min_observers = 2
+trust_self_reported = false          # true only for test networks
+
+[anchor]
+calendars = [
+  "https://a.pool.opentimestamps.org",
+  "https://b.pool.opentimestamps.org",
+  "https://a.pool.eternitywall.com",
+]
+esplora_url = "https://blockstream.info/api"   # "" to disable
+interval_secs = 3600
 
 # Per-site normalization rules. They apply to the host and its subdomains,
 # and are committed to in every attestation's normalizer profile.

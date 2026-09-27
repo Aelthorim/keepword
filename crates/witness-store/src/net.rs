@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use witness_core::beacon::Beacon;
-use witness_core::net::{Alert, Cosignature, Descriptor, Gossip, Observation, WatchRequest};
+use witness_core::net::{
+    Alert, Cosignature, Descriptor, Gossip, Observation, TlsnReceipt, WatchRequest,
+};
 use witness_core::statement::Signed;
 use witness_core::{merkle, Digest, SignedAttestation, SignedTreeHead, WitnessKey};
 
@@ -111,6 +113,12 @@ CREATE TABLE anchors (
     status     TEXT NOT NULL,
     height     INTEGER,
     updated_at INTEGER NOT NULL
+);
+
+-- TLSNotary receipts for this node's own attestations.
+CREATE TABLE tlsn_proofs (
+    attestation BLOB PRIMARY KEY,
+    receipt     TEXT NOT NULL
 );
 
 -- One reputation event per witness, URL and quorum window.
@@ -711,6 +719,28 @@ impl Store {
             .collect();
         all.sort_by_key(|a| (a.status != "confirmed", a.size));
         Ok(all.into_iter().next())
+    }
+
+    // -------------------------------------------------------------- tlsn
+
+    pub fn tlsn_insert(&self, attestation: &Digest, receipt: &Signed<TlsnReceipt>) -> Result<()> {
+        self.db().execute(
+            "INSERT OR REPLACE INTO tlsn_proofs (attestation, receipt) VALUES (?1, ?2)",
+            params![attestation.as_bytes(), serde_json::to_string(receipt)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn tlsn_for(&self, attestation: &Digest) -> Result<Option<Signed<TlsnReceipt>>> {
+        let j: Option<String> = self
+            .db()
+            .query_row(
+                "SELECT receipt FROM tlsn_proofs WHERE attestation = ?1",
+                [attestation.as_bytes()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        j.as_deref().map(json).transpose()
     }
 
     // --------------------------------------------------------- reputation

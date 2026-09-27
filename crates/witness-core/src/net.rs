@@ -135,6 +135,39 @@ impl Statement for Observation {
     }
 }
 
+/// A second witness's statement that it took part, as TLSNotary verifier,
+/// in the TLS session in which `prover` fetched these bytes from
+/// `server_name`, and that the server's certificate chain was valid for that
+/// name. Fabricating a capture now needs the verifier's collusion.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsnReceipt {
+    pub prover: WitnessKey,
+    pub server_name: String,
+    /// BLAKE3 of the plaintext the prover sent (the HTTP request).
+    pub sent_hash: Digest,
+    /// BLAKE3 of the plaintext the prover received (the HTTP response).
+    pub received_hash: Digest,
+    pub received_len: u64,
+    pub verified_at_ms: i64,
+    pub verifier: WitnessKey,
+}
+
+impl Statement for TlsnReceipt {
+    const DOMAIN: &'static str = "witness/tlsn-receipt/v1";
+    fn encode(&self, e: &mut Encoder) {
+        e.fixed(&self.prover.0)
+            .str(&self.server_name)
+            .fixed(self.sent_hash.as_bytes())
+            .fixed(self.received_hash.as_bytes())
+            .u64(self.received_len)
+            .i64(self.verified_at_ms)
+            .fixed(&self.verifier.0);
+    }
+    fn signer(&self) -> WitnessKey {
+        self.verifier
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AlertKind {
@@ -232,6 +265,7 @@ pub enum Gossip {
         b: SignedTreeHead,
     },
     Beacon(Beacon),
+    TlsnReceipt(Signed<TlsnReceipt>),
 }
 
 impl Gossip {
@@ -245,6 +279,7 @@ impl Gossip {
             Gossip::Alert(_) => "alert",
             Gossip::Equivocation { .. } => "equivocation",
             Gossip::Beacon(_) => "beacon",
+            Gossip::TlsnReceipt(_) => "tlsn_receipt",
         }
     }
 
@@ -275,6 +310,7 @@ impl Gossip {
                 "witness beacon-id v1",
                 &[&b.round.to_be_bytes(), &b.signature],
             ),
+            Gossip::TlsnReceipt(s) => s.id(),
         };
         Digest::tagged(
             "witness gossip-id v1",
@@ -300,6 +336,7 @@ impl Gossip {
                 }
             }
             Gossip::Beacon(b) => b.verify(),
+            Gossip::TlsnReceipt(s) => s.verify(),
         }
     }
 }

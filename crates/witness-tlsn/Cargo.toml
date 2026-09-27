@@ -1,0 +1,39 @@
+[package]
+name = "witness-tlsn"
+description = "TLSNotary proof tier for Witness: a second witness notarizes the TLS session of a capture"
+version = "0.1.0"
+edition = "2021"
+# tlsn requires a recent toolchain.
+rust-version = "1.95"
+publish = false
+
+# A separate workspace: tlsn pulls in a large MPC stack from git, which the
+# main workspace should not have to fetch or build.
+[workspace]
+
+[[bin]]
+name = "witness-tlsn"
+path = "src/main.rs"
+
+[dependencies]
+witness-core = { path = "../witness-core" }
+witness-capture = { path = "../witness-capture" }
+witness-node = { path = "../witness-node" }
+
+tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7", features = ["mozilla-certs"] }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"
+tlsn-server-fixture = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7" }
+tlsn-server-fixture-certs = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7" }

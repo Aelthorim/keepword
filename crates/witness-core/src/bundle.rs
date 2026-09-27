@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::attestation::SignedAttestation;
-use crate::net::Cosignature;
+use crate::net::{Cosignature, TlsnReceipt};
 use crate::statement::Signed;
 use crate::sth::SignedTreeHead;
 use crate::{merkle, ots, Digest, Error};
@@ -28,6 +28,17 @@ pub struct Bundle {
     pub content: Option<Content>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tlsn: Option<TlsnEvidence>,
+}
+
+/// TLSNotary proof tier: a second witness's receipt for the TLS session,
+/// and the received plaintext that links it to this attestation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TlsnEvidence {
+    pub receipt: Signed<TlsnReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_b64: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,6 +158,7 @@ impl Bundle {
             inclusion: None,
             content: None,
             anchor: None,
+            tlsn: None,
         }
     }
 
@@ -262,6 +274,9 @@ impl Bundle {
         if let Some(anchor) = &self.anchor {
             check_anchor(&mut r, &self.attestation, anchor);
         }
+        if let Some(t) = &self.tlsn {
+            check_tlsn(&mut r, &self.attestation, t);
+        }
 
         let content = self.content.clone().unwrap_or_default();
         check_bytes(&mut r, "headers", content.headers(), &a.headers_hash, None);
@@ -369,6 +384,74 @@ fn check_anchor(r: &mut Report, att: &SignedAttestation, anchor: &Anchor) {
             };
             r.push("anchor", Status::Skip, detail);
         }
+    }
+}
+
+fn check_tlsn(r: &mut Report, att: &SignedAttestation, t: &TlsnEvidence) {
+    let a = &att.attestation;
+    let rc = &t.receipt.body;
+    let host = url::Url::parse(&a.final_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    let problem = if t.receipt.verify().is_err() {
+        Some("receipt signature is invalid".to_string())
+    } else if rc.prover != a.witness {
+        Some("receipt is for a different prover".into())
+    } else if rc.verifier == a.witness {
+        Some("a witness cannot notarize its own capture".into())
+    } else if host.as_deref() != Some(rc.server_name.to_ascii_lowercase().as_str()) {
+        Some(format!(
+            "receipt is for server {}, not {}",
+            rc.server_name,
+            host.unwrap_or_default()
+        ))
+    } else if (rc.verified_at_ms - a.fetched_at_ms).abs() > 10 * 60_000 {
+        Some("receipt time does not match the capture time".into())
+    } else {
+        None
+    };
+    if let Some(p) = problem {
+        r.push("tls notary", Status::Fail, p);
+        return;
+    }
+    let Some(raw) = t.received_b64.as_ref() else {
+        r.push(
+            "tls notary",
+            Status::Skip,
+            "valid receipt, but the transcript that links it to this body is not included",
+        );
+        return;
+    };
+    let Ok(raw) = B64.decode(raw) else {
+        r.push("tls notary", Status::Fail, "transcript is not base64");
+        return;
+    };
+    if Digest::of(&raw) != rc.received_hash || raw.len() as u64 != rc.received_len {
+        r.push(
+            "tls notary",
+            Status::Fail,
+            "transcript does not match the receipt",
+        );
+        return;
+    }
+    match crate::httpmsg::parse_response(&raw) {
+        Ok(resp)
+            if Digest::of(&resp.body) == a.body_hash
+                && Digest::of(&resp.header_block) == a.headers_hash
+                && resp.status == a.status =>
+        {
+            r.push(
+                "tls notary",
+                Status::Pass,
+                format!(
+                    "witness {} verified the TLS session with {} (MPC-TLS); the body came from that server",
+                    rc.verifier.short(),
+                    rc.server_name
+                ),
+            )
+        }
+        Ok(_) => r.push("tls notary", Status::Fail, "transcript does not produce this attestation's response"),
+        Err(e) => r.push("tls notary", Status::Fail, format!("transcript: {e}")),
     }
 }
 
