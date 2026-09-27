@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use witness_core::bundle::{Bundle, Content, Status};
-use witness_node::config::Config;
 use witness_node::Node;
+use witness_node::config::Config;
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Policy</title>
 <script>window.csrf="TOKEN";</script></head><body>
@@ -62,6 +62,7 @@ fn node(dir: &std::path::Path, allow_private: bool) -> Node {
     cfg.capture.allow_private_addresses = allow_private;
     cfg.vantage.asn = Some(64496);
     cfg.vantage.country = Some("DE".into());
+    cfg.beacon.drand_url = None;
     Node::init(dir, &cfg).unwrap();
     Node::open(dir).unwrap()
 }

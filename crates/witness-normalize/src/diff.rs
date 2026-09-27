@@ -10,7 +10,7 @@ use similar::{ChangeTag, TextDiff};
 /// doesn't move the machine-readable modification date, it is "silent".
 static UPDATE_NOTICE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(updated?|update:|correction|corrected|clarification|editor'?s note|this (article|story|post) (has been|was) (updated|amended|changed)|aktualisiert|aktualisierung|korrektur|berichtigung|richtigstellung|anmerkung der redaktion|in einer früheren version|mise à jour|rectificatif)\b",
+        r"(?i)(\b(updated?|last modified|zuletzt (geändert|aktualisiert)|correction|corrected|clarification|editor'?s note|this (article|story|post) (has been|was) (updated|amended|changed)|aktualisiert|aktualisierung|korrektur|berichtigung|richtigstellung|anmerkung der redaktion|in einer früheren version|mise à jour|rectificatif)\b|\b(update|stand):)",
     )
     .expect("valid regex")
 });
@@ -136,6 +136,14 @@ mod tests {
         let c = diff("modified: 1\np: a\n", "modified: 2\np: b\n").unwrap();
         assert!(!c.is_silent(), "{c:?}");
         let c = diff("p: a\n", "p: b\np: Dieser Artikel wurde aktualisiert.\n").unwrap();
+        assert!(!c.is_silent());
+        let c = diff(
+            "p: Stand: 27.09.2026 10:15 Uhr\np: a\n",
+            "p: Stand: 27.09.2026 11:30 Uhr\np: b\n",
+        )
+        .unwrap();
+        assert!(!c.is_silent(), "{c:?}");
+        let c = diff("p: a\n", "p: b\np: UPDATE: figures revised\n").unwrap();
         assert!(!c.is_silent());
     }
 

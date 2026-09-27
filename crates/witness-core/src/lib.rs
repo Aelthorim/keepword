@@ -5,12 +5,17 @@
 
 pub mod assign;
 pub mod attestation;
+pub mod beacon;
 pub mod bundle;
 pub mod encoding;
 mod hash;
+pub mod httpmsg;
 pub mod keys;
 pub mod merkle;
+pub mod net;
+pub mod ots;
 pub mod quorum;
+pub mod statement;
 pub mod sth;
 pub mod target;
 

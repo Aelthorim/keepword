@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::encoding::Encoder;
 use crate::keys::{Keypair, Signature, WitnessKey};
-use crate::{merkle, Digest, Error};
+use crate::{Digest, Error, merkle};
 
 const SIGNING_DOMAIN: &str = "witness/tree-head/v1";
 

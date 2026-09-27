@@ -6,6 +6,7 @@
 //! with a `norm.profile` digest naming the exact normalizer version and site
 //! rules used.
 
+mod clock;
 pub mod diff;
 mod html;
 mod noise;
@@ -21,7 +22,7 @@ pub use noise::clean_text;
 pub use rules::{RuleError, SiteRules};
 
 /// Bump whenever normalizer output can change for the same input.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -74,8 +75,16 @@ impl Normalizer {
             .max_by_key(|r| r.host.len())
     }
 
-    pub fn normalize(&self, url: &Url, content_type: Option<&str>, body: &[u8]) -> Normalized {
-        normalize_with(self.rules_for(url), url, content_type, body)
+    /// `fetched_at_ms` is the signed capture time; timestamps equal to it
+    /// are live clocks and get masked.
+    pub fn normalize(
+        &self,
+        url: &Url,
+        content_type: Option<&str>,
+        body: &[u8],
+        fetched_at_ms: i64,
+    ) -> Normalized {
+        normalize_with(self.rules_for(url), url, content_type, body, fetched_at_ms)
     }
 }
 
@@ -97,13 +106,14 @@ pub fn normalize_with(
     url: &Url,
     content_type: Option<&str>,
     body: &[u8],
+    fetched_at_ms: i64,
 ) -> Normalized {
     let kind = detect(content_type, body);
     let mut text = format!("witness-norm/{VERSION} {}\n", kind.label());
     match kind {
         Kind::Html => {
             let s = decode(content_type, body);
-            for line in html::normalize(&s, url, rules) {
+            for line in html::normalize(&s, url, rules, fetched_at_ms) {
                 text.push_str(&line);
                 text.push('\n');
             }
@@ -114,9 +124,9 @@ pub fn normalize_with(
                 text.push_str(&serde_json::to_string_pretty(&v).expect("json serializes"));
                 text.push('\n');
             }
-            Err(_) => push_text(&mut text, &decode(content_type, body)),
+            Err(_) => push_text(&mut text, &decode(content_type, body), fetched_at_ms),
         },
-        Kind::Text => push_text(&mut text, &decode(content_type, body)),
+        Kind::Text => push_text(&mut text, &decode(content_type, body), fetched_at_ms),
         Kind::Opaque => {
             text.push_str(&format!("body: {}\n", Digest::of(body)));
         }
@@ -133,9 +143,10 @@ pub fn normalize_with(
     }
 }
 
-fn push_text(out: &mut String, s: &str) {
+fn push_text(out: &mut String, s: &str, fetched_at_ms: i64) {
     for line in s.lines() {
-        let l = clean_text(line);
+        let cleaned = clean_text(line);
+        let l = clock::mask_now(&cleaned, fetched_at_ms);
         if !l.is_empty() {
             out.push_str(&l);
             out.push('\n');
@@ -198,7 +209,7 @@ mod tests {
 
     fn norm(html: &str) -> Normalized {
         let url = Url::parse("https://news.example/article/1").unwrap();
-        Normalizer::default().normalize(&url, Some("text/html; charset=utf-8"), html.as_bytes())
+        Normalizer::default().normalize(&url, Some("text/html; charset=utf-8"), html.as_bytes(), 0)
     }
 
     const PAGE: &str = r#"<!doctype html><html><head>
@@ -222,7 +233,7 @@ mod tests {
     #[test]
     fn extracts_content() {
         let n = norm(PAGE);
-        let expected = "witness-norm/1 html\n\
+        let expected = "witness-norm/2 html\n\
             title: Minister resigns\n\
             modified: 2024-05-01T10:00:00Z\n\
             h1: Minister resigns\n\
@@ -265,23 +276,30 @@ mod tests {
         };
         let n = Normalizer::new(vec![rules]).unwrap();
         let url = Url::parse("https://news.example/a").unwrap();
-        let out = n.normalize(&url, Some("text/html"), PAGE.as_bytes());
+        let out = n.normalize(&url, Some("text/html"), PAGE.as_bytes(), 0);
         assert!(!out.text.contains("A. Writer"));
         assert_ne!(out.commitment.profile, profile(None));
-        assert!(Normalizer::new(vec![SiteRules {
-            host: "x".into(),
-            remove: vec!["[[".into()],
-            root: None
-        }])
-        .is_err());
+        assert!(
+            Normalizer::new(vec![SiteRules {
+                host: "x".into(),
+                remove: vec!["[[".into()],
+                root: None
+            }])
+            .is_err()
+        );
     }
 
     #[test]
     fn json_is_key_order_independent() {
         let url = Url::parse("https://api.example/").unwrap();
         let n = Normalizer::default();
-        let a = n.normalize(&url, Some("application/json"), br#"{"b":1,"a":[1,2]}"#);
-        let b = n.normalize(&url, Some("application/json"), br#"{ "a":[1,2], "b":1 }"#);
+        let a = n.normalize(&url, Some("application/json"), br#"{"b":1,"a":[1,2]}"#, 0);
+        let b = n.normalize(
+            &url,
+            Some("application/json"),
+            br#"{ "a":[1,2], "b":1 }"#,
+            0,
+        );
         assert_eq!(a.commitment, b.commitment);
     }
 
@@ -289,7 +307,7 @@ mod tests {
     fn legacy_charset() {
         let url = Url::parse("https://example.de/").unwrap();
         let body = b"<html><head><meta charset=\"iso-8859-1\"></head><body><p>Gr\xfc\xdfe</p></body></html>";
-        let n = Normalizer::default().normalize(&url, Some("text/html"), body);
+        let n = Normalizer::default().normalize(&url, Some("text/html"), body, 0);
         assert!(n.text.contains("p: Grüße"), "{}", n.text);
     }
 
@@ -297,7 +315,7 @@ mod tests {
     fn opaque_bodies() {
         let url = Url::parse("https://example.com/f.pdf").unwrap();
         let n =
-            Normalizer::default().normalize(&url, Some("application/pdf"), b"%PDF-1.7 \x00\x01");
+            Normalizer::default().normalize(&url, Some("application/pdf"), b"%PDF-1.7 \x00\x01", 0);
         assert_eq!(n.kind, Kind::Opaque);
     }
 }

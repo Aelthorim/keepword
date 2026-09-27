@@ -9,12 +9,15 @@ page changes it tells you what changed and whether the publisher said so.
 Every record can be exported as a self-contained **evidence bundle** that
 anyone can verify offline, without trusting the node.
 
-The goal is a network of independent witnesses that makes three things
-expensive: publishers quietly rewriting pages, publishers showing witnesses
-something different from what users see, and witnesses lying. Milestones
-M0 and M1 are done. Single-node operation, watchlists, edit detection and
-the web UI all work. The network layer is designed but not built yet; see
-[docs/DESIGN.md](docs/DESIGN.md).
+Witnesses federate: they mirror and cosign each other's logs, take on
+watch requests assigned by public randomness, corroborate each other's
+network location, and compare what they saw. When independent networks see
+different content at the same moment, the network raises a cloaking alert.
+Captures carry a drand beacon, which proves they happened *after* a point
+in time. Logs are anchored in Bitcoin through OpenTimestamps, which proves
+the captures existed *before* a later point.
+
+The design, threat model and formats are in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Quick start
 
@@ -79,7 +82,13 @@ VERIFIED
 | `watch add\|rm\|list\|run [--once]` | Manage and run the watchlist |
 | `log head\|consistency OLD [NEW]\|audit` | Tree head, consistency proofs, full self-audit |
 | `purge URL [--forget]` | Erase stored content (and records); the log stays valid |
-| `serve [--addr A] [--watch]` | Read-only web UI, optionally with the scheduler |
+| `serve [--addr A] [--api-addr B] [--watch] [--anchor]` | Web UI (private), peer API (public), scheduler, federation and anchoring loops |
+| `net add-peer URL\|peers\|sync\|status` | Federation with other witnesses |
+| `request URL [--every 1h] [--for 7days]` | Ask the network to watch a URL |
+| `verdict URL` | What independent witnesses agree the URL served |
+| `alerts` | Cloaking, silent-edit and equivocation alerts |
+| `anchor submit\|upgrade\|list\|export` | Bitcoin anchoring via OpenTimestamps |
+| `beacon [ROUND]` | Fetch and verify a drand beacon |
 
 `--at` takes RFC 3339 or `YYYY-MM-DD` (end of that day, UTC). IDs can be
 abbreviated. `--json` gives machine-readable output.
@@ -97,6 +106,38 @@ The important settings:
   to.
 - `capture.use_system_proxy`: off by default. A proxy changes your vantage
   point, and a TLS-intercepting one hides the server's certificate.
+
+## Running in a network
+
+```sh
+witness init --asn 3320 --country DE
+# in witness-data/witness.toml:
+#   [network]  endpoint = "https://witness.example.org"   peers = ["https://other.example"]
+#   [quorum]   asn_db = "/var/lib/witness/ip2asn-combined.tsv"   (from iptoasn.com)
+witness serve --api-addr 0.0.0.0:8481 --watch --anchor
+```
+
+Put the API (`/v1/...`) behind TLS on your public endpoint. Keep the web UI
+(`--addr`, default `127.0.0.1:8480`) private, because it shows page content.
+Peers corroborate each other's location from the addresses they see pushes
+come from. Verdicts only count witnesses whose ASN is corroborated this
+way, so every node needs an IP-to-ASN table.
+
+## TLSNotary proof tier
+
+For high-value pages, a second witness can notarize the TLS session itself
+(MPC-TLS via [TLSNotary](https://tlsnotary.org)). Then even the capturing
+witness couldn't have made the content up on its own:
+
+```sh
+cd crates/witness-tlsn          # separate workspace, Rust 1.95+
+cargo build --release
+witness-tlsn serve --addr 0.0.0.0:8482                    # on the notary
+witness-tlsn capture https://example.org/terms --verifier notary.example.net:8482 --verifier-key <hex>
+```
+
+Bundles then carry the notary's receipt and the transcript, and
+`witness verify` checks both.
 
 ## Headless rendering
 
@@ -118,7 +159,8 @@ crates/witness-core       protocol: encoding, attestations, Merkle log, bundles,
 crates/witness-normalize  canonicalizer, site rules, diff and silent-edit classifier
 crates/witness-capture    HTTP capture, SSRF guard, headless render, WARC export
 crates/witness-store      blob store, SQLite index, log, watchlist
-crates/witness-node       the `witness` binary and web UI
+crates/witness-node       the `witness` binary: CLI, peer API, federation, web UI
+crates/witness-tlsn       TLSNotary proof tier (separate workspace)
 docs/DESIGN.md            threat model, formats, network design, roadmap
 ```
 
@@ -130,10 +172,18 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all --check
 ```
 
-The end-to-end test (`crates/witness-node/tests/e2e.rs`) runs a local HTTP
-server through the whole lifecycle: capture, noise that must *not* count as
-a change, a silent edit, a disclosed edit, bundle verification, tampering,
-redirects, audit and erasure.
+Integration tests run everything over real HTTP on localhost:
+
+- `e2e.rs`: the single-node lifecycle (capture, noise, silent and disclosed
+  edits, bundles, tampering, redirects, audit, erasure)
+- `network.rs`: four witnesses in four ASNs (discovery, log mirroring,
+  cosigning, observation receipts, assigned watch requests, a cloaking
+  server producing a split verdict and alert, equivocation detection)
+- `anchoring.rs`: drand beacons and Bitcoin anchoring against mock drand,
+  OpenTimestamps and Esplora services
+- `witness-normalize/tests/corpus.rs`: the normalizer regression corpus
+- `witness-tlsn/tests/notary.rs`: a full MPC-TLS notarization between two
+  witnesses against TLSNotary's test server
 
 ## License
 

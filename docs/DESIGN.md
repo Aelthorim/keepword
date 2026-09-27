@@ -61,11 +61,11 @@ The original plan was sound. These are the places I changed it, and why.
    With `weight = H(epoch_seed ‖ url_key ‖ node_key)`, where the seed is
    public randomness published per epoch (drand, or a Bitcoin block hash),
    the grinding has to be redone each epoch after the seed appears. Per-ASN
-   and per-country caps apply at selection time. Kademlia stays as the
-   routing and discovery layer. **Implemented:** `witness-core/src/assign.rs`.
+   and per-country caps apply at selection time. With rendezvous hashing
+   there is no need for a DHT at all (§6.1). **Implemented.**
 
 6. **Vantage is self-reported, so it doesn't count until corroborated.**
-   A node can claim any ASN. See §6.2 for corroboration. A related
+   A node can claim any ASN. See §6.3 for corroboration. A related
    correction: faking many network locations is *not* hard. Residential
    proxy networks sell access to thousands of ASNs. ASN diversity raises
    the cost of a Sybil attack but doesn't remove it. That is why reputation
@@ -75,7 +75,7 @@ The original plan was sound. These are the places I changed it, and why.
    gives an *upper* bound: the capture existed by then. A witness could
    still pre-date a capture. Putting a fresh drand beacon value in the
    attestation proves it was made *after* that round. Together they
-   sandwich the capture time (v2 attestation field, M3).
+   sandwich the capture time. **Implemented** (§6.6).
 
 8. **WARC is an export format, not the storage format.** WARC records carry
    per-capture IDs and dates, which also defeats dedup. Nodes store
@@ -86,12 +86,11 @@ The original plan was sound. These are the places I changed it, and why.
    operational dependencies. Postgres belongs in an aggregator/indexer that
    ingests many logs (M2+), and that component can use your existing setup.
 
-10. **Adopt C2SP transparency-log formats for M2.** C2SP `tlog-tiles` for
-    serving logs and `tlog-cosignature` for witness cosigning already
-    exist, with independent implementations (Go's checksum database
-    witnesses, Sigsum). Reusing them gets auditing tooling for free. The
-    current Merkle code follows RFC 9162 exactly, so moving over means
-    changing the hash function label and the serving format, not the tree.
+10. **HTTP federation instead of libp2p** (§6.1), shaped after C2SP
+    transparency-log practice (`tlog-tiles`, `tlog-cosignature`). The API
+    is not byte-compatible with C2SP yet, because C2SP uses SHA-256 and
+    signed notes. The tree follows RFC 9162 exactly, so adding a C2SP view
+    means changing the hash label and serving format, not the tree.
 
 11. **The default User-Agent is honest.** It identifies Witness. Cloaking
     detection mostly comes from rendered captures (a real browser) and from
@@ -110,7 +109,7 @@ The original plan was sound. These are the places I changed it, and why.
 `canonical_url`: WHATWG parse; http/https only; no credentials; fragment and
 empty query removed. `url_key = BLAKE3-derive-key("witness url-key v1", len‖url)`.
 
-### 3.2 Attestation (v1)
+### 3.2 Attestation (v1, v2)
 
 | Field | Meaning |
 |---|---|
@@ -124,11 +123,13 @@ empty query removed. `url_key = BLAKE3-derive-key("witness url-key v1", len‖ur
 | `norm.profile`, `norm.hash` | Normalizer profile digest and BLAKE3 of the normalized text |
 | `cert_sha256` | SHA-256 of the leaf certificate DER, the fingerprint crt.sh indexes |
 | `server_ip` | Peer address, omitted when fetching through a proxy |
-| `vantage.asn`, `vantage.country` | Self-reported (§6.2) |
+| `vantage.asn`, `vantage.country` | Self-reported (§6.3) |
 | `witness` | Ed25519 public key |
+| `beacon` | v2 only: drand quicknet round and BLS signature fetched just before the capture |
 
-Signing bytes: `str("witness/attestation/v1")` followed by the fields in the
-order above. Integers are big-endian, variable data is prefixed with a `u32`
+Signing bytes: `str("witness/attestation/v1")` (or `v2` when a beacon is
+present) followed by the fields in the order above, with the beacon's
+`u64 round ‖ bytes signature` last. Integers are big-endian, variable data is prefixed with a `u32`
 length, optionals have a `0/1` tag, and IPs are `4|6` plus octets. The
 signature is Ed25519 with strict verification, so it can't be malleated into
 a second valid signature for the same statement.
@@ -155,20 +156,25 @@ the site rules behind the profile. Verification checks, independently:
 3. Merkle inclusion
 4. tree head not older than the capture
 5. headers/body/normalized text against their hashes (each optional)
-6. **renormalize**: re-run the normalizer on the body and compare with
+6. **not before**: the drand beacon's BLS signature, and that its round was
+   published before the claimed capture time
+7. **cosignatures**: other witnesses' signatures over the same tree head
+8. **anchor**: an inclusion proof into an anchored tree head and its
+   OpenTimestamps proof; with `--esplora`, the block's Merkle root
+9. **renormalize**: re-run the normalizer on the body and compare with
    `norm.hash`. This only runs when the verifier's normalizer produces the
    same profile. Otherwise it is skipped with the reason stated.
 
 Any piece can be withheld (after an erasure, say) without affecting the
 other checks. `witness verify --bundle FILE` needs no node, key or network.
 
-## 4. Normalization (v1, implemented)
+## 4. Normalization (v2, implemented)
 
 The output is line-oriented text, one block per line, which makes it
 diffable, readable and cheap to hash:
 
 ```
-witness-norm/1 html
+witness-norm/2 html
 title: Minister resigns
 modified: 2024-05-01T10:00:00Z
 h1: Minister resigns
@@ -184,12 +190,18 @@ The rules:
 - **Dropped**: script/style/template/iframe/svg/form controls, `hidden`,
   `aria-hidden`, `display:none`, and elements whose class or id *tokens*
   mark ads, consent banners, share widgets, newsletters or recommendation
-  rails (`ad-slot` matches, `header` does not). Also anything matched by
-  site `remove` selectors.
+  rails (`ad-slot` matches, `header` does not), consent-management and ad
+  vendors by prefix (OneTrust, Usercentrics, Cookiebot, Sourcepoint,
+  Didomi, GPT slots, Taboola, Outbrain…), and user comments. Also anything
+  matched by site `remove` selectors.
 - **Text**: NFC, invisible characters removed, whitespace collapsed.
   Relative times ("5 minutes ago", "vor 3 Stunden", "il y a 2 jours")
   become `<reltime>`, and live counters ("1,234 views") become `<n> views`.
   `<time datetime>` is replaced by its machine-readable value.
+- **Live clocks**: an absolute timestamp equal to the signed capture time
+  becomes `<now>` (zoned: within 120 s; zone-less: only with seconds,
+  within 90 s modulo whole hours). `fetched_at` is signed, so verifiers get
+  the same result.
 - **Links**: resolved, fragment dropped, tracking parameters (`utm_*`,
   `fbclid`, `gclid`, …) removed.
 - **Images**: resolved and compared *without* query string (CDN resize
@@ -210,140 +222,231 @@ are part of the profile.
 ### Silent-edit classification
 
 A change is **disclosed** if an *added* line is a new `modified:` date, or
-matches an update notice ("Update:", "Correction", "Editor's note",
-"aktualisiert", "Korrektur", "Anmerkung der Redaktion", "mise à jour", …).
+matches an update notice ("Update:", "Last updated", "Correction",
+"Editor's note", "Stand:", "aktualisiert", "Korrektur", "Anmerkung der
+Redaktion", "mise à jour", …).
 Otherwise it is **silent**. Removing a correction notice does not count as
 disclosure. When the normalized text wasn't retained, a change is recorded
 but never labelled silent.
 
-### Known gaps (tuning backlog)
+### Regression corpus
 
-- **Absolute "now" clocks.** A JS clock printing the current time looks
-  like an edit. Candidate fix: treat an absolute timestamp within a few
-  minutes of `fetched_at` as `<now>`. `fetched_at` is signed, so
-  verification can still re-run normalization.
+`crates/witness-normalize/tests/corpus/` holds pages modelled on common
+publishing stacks: a German public broadcaster's article, WordPress with
+Jetpack and Cloudflare email obfuscation, a SaaS privacy policy behind
+OneTrust, GOV.UK, and a JS-rendered status page. Each has variants that
+reproduce what changes between two real requests (rotated tokens, counters,
+ad slots, consent text, cache busters, re-keyed email obfuscation, clocks),
+which must normalize identically, and edits that must be caught and
+classified as silent or disclosed. The fixtures are hand-built because this
+development environment couldn't reach live sites. Growing it from real
+captures is the most valuable next step.
+
+### Known gaps
+
 - **Personalised and randomised blocks** ("people also read") that don't
-  use recognisable class names. For now these need site rules.
-- **Image content**: images are compared by URL, not bytes. Hashing image
-  bytes is a per-site opt-in for later.
+  use recognisable class names still need site rules.
+- **Image content**: images are compared by URL, not bytes.
 - **A/B tests** look like cloaking to a single witness. The quorum logic
-  (§6.3) is what distinguishes them.
+  (§6.5) is what distinguishes them.
 
-## 5. Node (implemented, M0 + M1)
+## 5. Node (implemented)
 
 ```
 witness-core        pure protocol: encoding, attestations, Merkle, tree heads,
-                    bundles, assignment, quorum (no I/O)
+                    bundles, signed statements and gossip messages, drand
+                    beacons, OpenTimestamps, assignment, quorum (no I/O)
 witness-normalize   canonicalizer, site rules, diff + silent-edit classifier
 witness-capture     HTTP capture (cert, IP, redirects, SSRF guard),
                     headless render (feature "render"), WARC export
 witness-store       BLAKE3 blob store, SQLite index, log + tree heads,
-                    watchlist, change table, purge
-witness-node        `witness` CLI, watch scheduler, read-only web UI
+                    watchlist, change table, purge; peers, mirrored logs,
+                    gossip outbox, requests, cosignatures, observations,
+                    alerts, beacons, anchors, reputation
+witness-node        `witness` CLI, peer API, federation, verdicts,
+                    anchoring, watch scheduler, web UI
 ```
 
-The capture pipeline is: canonicalize URL → fetch → normalize with the
-host's rules → build attestation → sign → store blobs (per retention) → in
-one SQLite transaction insert the attestation, append its ID to the log and
-sign the new tree head → compare with the previous capture of the same URL
-and method → record a change if there is one.
+The capture pipeline is: canonicalize URL → take a recent drand beacon →
+fetch → normalize with the host's rules → build attestation → sign → store
+blobs (per retention) → in one fully durable SQLite transaction insert the
+attestation, append its ID to the log and sign the new tree head → compare
+with the previous capture of the same URL and method → record a change, and
+raise a silent-edit alert if the publisher didn't disclose it.
 
 `witness log audit` re-verifies everything: every tree head's signature,
 root and consistency with the next; every attestation's signature, ID and
 leaf position; and every retained blob's hash.
 
-## 6. Network (M2–M4 design)
+## 6. Network (implemented)
 
-### 6.1 Transport
+### 6.1 Transport: HTTP, not libp2p
 
-libp2p over QUIC with Noise. Kademlia handles peer discovery and routing
-only. Gossipsub carries these topics:
+The first plan said libp2p with Kademlia and gossipsub. The implementation
+uses plain HTTPS between nodes instead:
 
-- `witness/req/1`: watch requests (URL, requested method, requester's
-  signature and rate-limit token)
-- `witness/att/1`: new attestation IDs + tree heads. Bodies are fetched on
-  demand, which avoids pushing possibly personal URLs to everyone
-- `witness/sth/1`: tree heads for cross-checking and cosigning
-- `witness/alert/1`: silent-edit and split-verdict alerts
+- **Rendezvous assignment needs the full membership list anyway.** A DHT is
+  for finding *a few* nodes among millions without knowing them all.
+  Assignment ranks *every* eligible witness, and a witness network of
+  hundreds to low thousands fits in a table.
+- **Transparency logs already live on HTTP.** CT, C2SP `tlog-tiles` and the
+  Sigsum/Go checksum-database witnesses are all plain HTTP. An HTTP log is
+  auditable with `curl`, cacheable, and runs behind any reverse proxy or CDN.
+- **NAT is handled by push *and* pull.** Every exchange is started by the
+  syncing node: it pulls a peer's outbox and pushes its own. A node without
+  a public endpoint still sends and receives everything; it just can't be
+  mirrored.
+- **Smaller attack surface and dependency tree.** libp2p remains an option
+  as a second transport. All messages are transport-agnostic signed
+  statements.
 
-`iroh` is a reasonable alternative. The protocol messages are
-transport-agnostic.
+The API (`/v1`, see `crates/witness-node/src/api.rs`) serves the node's
+descriptor, known peers, tree head, leaf IDs, attestations, inclusion and
+consistency proofs, bundles, and its gossip outbox, and accepts pushes. It
+never serves page content, except blobs for hosts on
+`network.serve_content_hosts`. The web UI, which shows content, listens
+separately on localhost.
 
-### 6.2 Vantage corroboration
+### 6.2 Sync and gossip
 
-Self-reported ASN is worthless on its own. A node's network location counts
-only when at least *m* peers from *m* different ASNs have each signed an
-**observation receipt**: "I saw key K connect from IP X at time T". The
-libp2p `identify` protocol already reports the observed address. Verifiers
-map the IP to an ASN themselves, using a public BGP-derived table pinned
-per epoch by hash (e.g. from RouteViews). They don't trust the node's claim.
-Receipts expire, so a node that moves has to be re-observed.
+Each round, for each peer with an endpoint, a node:
 
-This establishes where a node *is*, not where each fetch came *from*. A
-malicious node can still fetch through a proxy. No protocol fixes that,
-TLSNotary included, because the TLS server sees the prover's egress, not
-the notary. What diversity really buys is **independent operators**, and
-that is what the quorum should count.
+1. refreshes the peer's descriptor (it must still be the same key) and
+   learns the peers it knows;
+2. fetches its tree head and any new leaf IDs, then recomputes the root over
+   **every leaf it has ever mirrored from that peer**. A peer can extend its
+   history but never rewrite what it has shown; a mismatch is rejected;
+3. two validly signed heads of the same size with different roots are an
+   **equivocation proof**, stored, gossiped and alerted on. Equivocating
+   logs are excluded from assignment;
+4. fetches the new attestations and verifies signature, signer and ID;
+5. **cosigns** the head: "consistent with everything I have seen";
+6. pulls the peer's outbox, pushes its own, and receives an observation
+   receipt (§6.3).
 
-### 6.3 Quorum (logic implemented in `witness-core/src/quorum.rs`)
+Gossip messages (descriptors, watch requests, tree heads, cosignatures,
+observations, alerts, equivocation proofs, drand beacons) are all signed
+statements with content-derived IDs. They are deduplicated by ID, validated
+(signature, clock skew, rate limits), stored and forwarded.
 
-For one URL, take the latest valid attestation per witness inside a time
-window. Compare within the largest class that shares a capture method and
-normalizer profile. Group by comparison hash and count *distinct
-corroborated ASNs* per group, never keys. The verdict is one of:
+### 6.3 Vantage corroboration
 
-- **Agreed**: the top group reaches `min_asns` and no second group reaches
-  `min_dissent_asns`. Witnesses outside the top group are listed as
-  dissenters, and their reputation suffers.
-- **Split**: two or more groups each reach `min_dissent_asns`. The server
-  served independent networks different content at the same time, which
-  means cloaking, geo-targeting or A/B testing. That is newsworthy either
-  way.
+Self-reported ASN is worthless on its own. Pushes carry a signed envelope
+(`from`, `to`, time, hash of the message IDs), protected against replay.
+The receiver answers with an **observation receipt**: "I saw key K connect
+from IP X at time T", which floods like any gossip. A verifier maps each IP
+to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
+`quorum.asn_db`). A location counts once at least `min_observers` distinct
+observers (not K itself) agree on the same ASN. Without an ASN table nothing
+is corroborated. `quorum.trust_self_reported` exists for test networks
+only.
+
+This establishes where a node *is* (its egress), not where each fetch came
+*from*. A malicious node can still fetch through a proxy, and no protocol
+fixes that, TLSNotary included. What diversity really buys is
+**independent operators**, and that is what the quorum counts.
+
+### 6.4 Watch requests and assignment
+
+`witness request URL` creates a signed request (interval ≥ 10 min, at most
+30 days, at most 50 active per requester). It floods, and every node
+computes the same rendezvous assignment:
+`weight = H(epoch_seed ‖ url_key ‖ node_key)`, highest first, at most one
+witness per ASN and `max_per_country` per country, `replication` in total.
+The **epoch seed** is the drand quicknet beacon at the start of the UTC day,
+verified offline with BLS. Beacons also travel over gossip, so nodes
+without drand access can still use them. Only assigned witnesses add the
+URL to their watchlist; the watch disappears when the request expires or
+the assignment moves.
+
+Assignment is only as consistent as nodes' views of the membership. After
+a few sync rounds they converge. Divergent views mean a URL briefly has
+slightly different assignees, never zero.
+
+### 6.5 Quorum, reputation and alerts
+
+For a URL, a node gathers its own and mirrored attestations and takes the
+latest per witness inside a time window. It compares them within the
+largest class sharing capture method and normalizer profile, groups them by
+comparison hash, and counts distinct corroborated ASNs, never keys:
+
+- **Agreed**: the top group reaches `min_asns`, no second group reaches
+  `min_dissent_asns`. Group members earn +1 reputation per URL and window;
+  dissenters get −3.
+- **Split**: two or more groups each reach `min_dissent_asns`. Independent
+  networks were served different content at the same moment: cloaking,
+  geo-targeting or an A/B test. A **split alert** is raised and flooded.
 - **Insufficient**: anything else.
 
-One lying witness produces a dissenter, never a split. Five keys in one ASN
-count once.
+Reputation decays with a 14-day half-life, so it takes sustained agreement
+to build. **Silent-edit alerts** are raised by the capturing witness.
 
-### 6.4 Assignment (implemented in `witness-core/src/assign.rs`)
+### 6.6 Time: drand lower bound, Bitcoin upper bound
 
-Rendezvous hashing with an epoch seed plus diversity caps (§2.5). The epoch
-is one day. The seed is the drand round at the epoch boundary. A URL's
-assigned set is public, so everyone knows who *should* have attested, and
-silence from an assigned witness is itself a signal. Requests are
-rate-limited per requester key and per target host, so a watch request
-can't make the network attack a site.
+Attestations with a beacon use the v2 encoding and embed the latest drand
+round the witness had before fetching. Its BLS signature verifies offline,
+proving the capture happened *after* that round. Attestations without a
+beacon keep the exact v1 bytes.
 
-### 6.5 Tree-head gossip and cosigning
+For the upper bound, `witness anchor submit` (or `serve --anchor`) sends
+`SHA-256(tree-head signing bytes)` to OpenTimestamps calendars. `anchor
+upgrade` fetches the Bitcoin path once it confirms and checks the block's
+Merkle root with an Esplora API. The stored proof is an ordinary detached
+`.ots` file (`witness anchor export`), so the standard `ots verify` tool
+also works. Bundles include the smallest confirmed anchored head covering
+the attestation. `witness verify --bundle F --esplora URL` checks it
+against the chain.
 
-Each node fetches its peers' tree heads, verifies consistency with the last
-head it saw, and publishes a cosignature (C2SP `tlog-cosignature`). A
-verifier can require *k* cosignatures on a tree head before trusting an
-inclusion proof. A log that forks must then show different histories to
-different cosigners, and the two conflicting signed heads prove it.
+### 6.7 Proof tier: TLSNotary (implemented, `crates/witness-tlsn`)
 
-### 6.6 Anchoring (M3)
+A plain attestation means "trust the witness". For high-value captures a
+second witness, ideally an assigned one in another ASN, acts as the
+**TLSNotary verifier**:
 
-Once an hour, a node submits its latest tree-head root to OpenTimestamps
-calendars, stores the pending `.ots` proof, and upgrades it once Bitcoin
-confirms. Bundles gain an `anchor` section. The verifier checks the OTS
-path to a block header, which gives a timestamp nobody can backdate.
+1. The prover opens a session on the verifier's notarization port with a
+   signed hello: prover key, verifier key, nonce, time. By default the
+   verifier only serves known peers.
+2. Prover and verifier run MPC-TLS: the TLS session keys are split between
+   them, so the prover cannot forge server responses on its own. The prover
+   fetches the page (`Accept-Encoding: identity`, `Connection: close`) and
+   reveals the full transcript and the server identity.
+3. The verifier checks the certificate chain against Mozilla's roots and
+   the server name, then signs a **`TlsnReceipt`**: prover, server name,
+   BLAKE3 of the sent and received plaintext, time. It keeps the receipt for
+   the prover to collect and floods it over gossip.
+4. The prover builds the attestation from the same transcript. Header block
+   and body come from the raw response via `witness_core::httpmsg`, so the
+   derivation is identical on both sides. It stores the receipt, and with
+   full retention the transcript.
 
-### 6.7 Proof tier: TLSNotary (M4)
+A bundle's **tls notary** check verifies the receipt signature. It also
+checks that the receipt names this witness as prover and another witness as
+verifier, that the server name equals the URL's host, and that the times
+match. It then re-derives status, header block and body from the transcript
+and compares them with the attestation. Fabricating a capture now needs two
+colluding witnesses.
 
-For captures marked high-value, a second assigned witness in a different
-ASN acts as the TLSNotary verifier during the fetch. The result is a proof
-that the bytes came from a TLS session with the named server. It makes
-fabrication by a single witness cryptographically impossible, not just
-socially costly. It costs an interactive MPC session per capture and
-depends on a library that is explicitly not production-ready and breaks
-often. So it stays optional and is behind a crate boundary
-(`witness-tlsn`), never a dependency of the core.
+Costs and limits: an MPC-TLS session takes about a second locally for a
+small page, and grows with size (default cap 256 KiB received). TLS 1.2
+only, no compression, no redirects. The crate is a **separate Cargo
+workspace** pinned to a tlsn git revision: tlsn is pre-1.0, changes its API
+often, needs Rust 1.95+ and pulls a large MPC stack from git. The main
+workspace never builds it; the receipt format and its verification live in
+`witness-core` and have no tlsn dependency.
 
-### 6.8 Reputation
+```sh
+witness-tlsn serve --addr 0.0.0.0:8482                   # on the notary witness
+witness-tlsn capture https://example.org/terms \
+    --verifier notary.example.net:8482 --verifier-key <hex>  # on the prover
+witness verify https://example.org/terms                 # includes "tls notary"
+```
 
-A witness's score is time-weighted agreement with Agreed verdicts, minus
-dissent, with a cap on how fast it can grow. Reputation takes weeks to
-earn, which is the part of Sybil cost that money for proxies can't buy.
+### 6.8 Bundles, cosigned
+
+Bundles are built against the largest tree head that other witnesses have
+cosigned, and carry those cosignatures. For a log to lie to one verifier,
+it must then have lied consistently to every cosigner, and any two
+conflicting heads prove it.
 
 ## 7. Storage, retention and law
 
@@ -375,10 +478,11 @@ before public operation. The design aims to leave room for compliance.
 |---|---|---|
 | M0 | Single node: fetch → normalize → sign → Merkle log → `verify`; bundles; WARC export; audit | **done** |
 | M1 | Watchlists, diff engine, silent-edit classification, web UI with edit history | **done** |
-| M1.5 | Normalizer tuning against a corpus of real news/ToS pages; "now"-clock heuristic; per-site rule library | next |
-| M2 | libp2p transport, gossip topics, tree-head exchange + cosigning, remote bundle fetch, C2SP tiles | design |
-| M3 | Epoch beacons, vantage corroboration, quorum verdicts in the UI, reputation, OpenTimestamps anchoring, drand lower bound (attestation v2) | core logic done (assignment, quorum) |
-| M4 | TLSNotary proof tier, cross-witness cloaking alerts | design |
+| M1.5 | Normalizer v2: live-clock masking, consent/ad vendors, regression corpus | **done** (corpus is hand-built; grow it from real captures) |
+| M2 | HTTP federation, log mirroring, cosigning, equivocation proofs, gossip, watch requests with assignment | **done** |
+| M3 | drand epoch seeds and capture lower bound, observation receipts + ASN corroboration, verdicts, reputation, OpenTimestamps anchoring | **done** |
+| M4 | TLSNotary proof tier, cross-witness cloaking (split) alerts | **done** |
+| next | Real-world corpus; C2SP-compatible log view; automatic notary selection from assignment; tile-based log serving for large logs; Postgres indexer across many logs | |
 
 ## 9. Open questions
 
@@ -390,6 +494,13 @@ before public operation. The design aims to leave room for compliance.
 - **Windowing for split verdicts.** Ten minutes is a guess. Fast-moving
   pages (live blogs) need either a shorter window or site rules that
   exclude the live section.
-- **Who can request watches in M2**, and how requests are rate-limited
-  without a central authority. One option is per-key token buckets, with
-  tokens earned by attesting.
+- **Who can request watches.** Today it is any key, capped at 50 active
+  requests each, with intervals ≥ 10 min. That is cheap to Sybil. Per-key
+  token buckets with tokens earned by attesting would be better.
+- **Membership consistency.** Assignment depends on each node's view of the
+  witness set. Views converge through gossip, but a signed, epoch-pinned
+  membership snapshot would make assignment exactly reproducible for
+  auditors.
+- **ASN table provenance.** Verifiers should agree on the IP→ASN table.
+  Pinning its hash per epoch (and gossiping it) is straightforward, but not
+  built.

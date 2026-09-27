@@ -61,8 +61,10 @@ async fn records_certificate_fingerprint() {
     assert_eq!(c.cert_sha256, Some(want));
     assert!(c.server_ip.unwrap().is_loopback());
     assert!(c.headers.starts_with(b"HTTP/1.1 200 OK\r\n"));
-    assert!(!String::from_utf8_lossy(&c.headers)
-        .to_ascii_lowercase()
-        .contains("connection:"));
+    assert!(
+        !String::from_utf8_lossy(&c.headers)
+            .to_ascii_lowercase()
+            .contains("connection:")
+    );
     assert_eq!(c.body, b"<html><body><p>hi</p></body></html>");
 }

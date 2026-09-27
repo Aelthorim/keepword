@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
+use crate::Digest;
 use crate::attestation::{Attestation, SignedAttestation};
 use crate::keys::WitnessKey;
-use crate::Digest;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct QuorumPolicy {
@@ -190,6 +190,7 @@ mod tests {
                 country: None,
             },
             witness: kp.public(),
+            beacon: None,
         }
         .sign(kp)
         .unwrap()

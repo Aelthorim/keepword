@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::keys::WitnessKey;
 use crate::Digest;
+use crate::keys::WitnessKey;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Candidate {
