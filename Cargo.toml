@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/witness-core",
+    "crates/witness-normalize",
+    "crates/witness-capture",
+    "crates/witness-store",
+    "crates/witness-node",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+repository = "https://github.com/aelthorim/witness"
+
+[workspace.dependencies]
+witness-core = { path = "crates/witness-core" }
+witness-normalize = { path = "crates/witness-normalize" }
+witness-capture = { path = "crates/witness-capture" }
+witness-store = { path = "crates/witness-store" }
+
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+blake3 = "1"
+clap = { version = "4", features = ["derive", "env"] }
+ed25519-dalek = "2"
+encoding_rs = "0.8"
+getrandom = "0.3"
+hex = "0.4"
+humantime = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+scraper = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+similar = "2"
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+unicode-normalization = "0.1"
+url = { version = "2", features = ["serde"] }

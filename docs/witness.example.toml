@@ -1,0 +1,32 @@
+# Witness node configuration. `witness init` writes a minimal version of this
+# to <data dir>/witness.toml.
+
+[vantage]
+# Where this node fetches from. Self-reported; peers corroborate it once the
+# network layer exists (docs/DESIGN.md §6.2).
+asn = 3320
+country = "DE"
+
+[capture]
+# Defaults to an honest "Witness/<version>" user agent.
+# user_agent = "Mozilla/5.0 ..."
+timeout_secs = 30
+max_body_mib = 32
+# A proxy changes the vantage point and hides the server's TLS certificate.
+use_system_proxy = false
+# Refuse loopback / private / link-local targets. Only enable for LAN monitoring.
+allow_private_addresses = false
+# chrome = "/usr/bin/chromium"   # for `capture --render`
+
+[content]
+# full        headers + raw body + normalized text (evidence and diffs)
+# normalized  headers + normalized text (diffs, no raw copy)
+# none        hashes only (edits detected, not shown)
+retain = "full"
+
+# Per-site normalization rules. They apply to the host and its subdomains,
+# and are committed to in every attestation's normalizer profile.
+[[rules]]
+host = "example-news.de"
+remove = [".live-ticker", "#comments", ".reading-time"]
+root = "article.story"
