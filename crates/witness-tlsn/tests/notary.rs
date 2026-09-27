@@ -3,11 +3,50 @@
 
 use std::sync::Arc;
 
-use tokio_util::compat::TokioAsyncReadCompatExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use witness_core::bundle::Status;
 use witness_node::config::Config;
 use witness_node::Node;
 use witness_tlsn::{capture_with, roots_from, Limits, Notary, VerifierService};
+
+/// A TLS 1.2 web server with TLSNotary's test certificate for
+/// `test-server.io`, serving one page.
+async fn serve_page(sock: DuplexStream) {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![CertificateDer::from(
+                tlsn_server_fixture_certs::SERVER_CERT_DER.to_vec(),
+            )],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+                tlsn_server_fixture_certs::SERVER_KEY_DER.to_vec(),
+            )),
+        )
+        .unwrap();
+    let mut tls = tokio_rustls::TlsAcceptor::from(Arc::new(config))
+        .accept(sock)
+        .await
+        .unwrap();
+    let mut buf = vec![0u8; 8192];
+    let mut n = 0;
+    while !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+        n += tls.read(&mut buf[n..]).await.unwrap();
+    }
+    let body = format!(
+        "<html><body><main><h1>Terms of Service</h1>{}</main></body></html>",
+        "<p>We never sell your data.</p>".repeat(40)
+    );
+    let resp = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    tls.write_all(resp.as_bytes()).await.unwrap();
+    tls.shutdown().await.unwrap();
+}
 
 fn node(dir: &std::path::Path) -> Node {
     let mut cfg = Config::default();
@@ -35,10 +74,10 @@ async fn notarized_capture_verifies() {
 
     // The web server, over an in-memory pipe.
     let (client, server) = tokio::io::duplex(1 << 20);
-    tokio::spawn(async move { tlsn_server_fixture::bind(server.compat()).await.unwrap() });
+    tokio::spawn(serve_page(server));
 
     let url = url::Url::parse(&format!(
-        "https://{}/formats/html",
+        "https://{}/terms",
         tlsn_server_fixture_certs::SERVER_DOMAIN
     ))
     .unwrap();
