@@ -4,7 +4,7 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
-## [Unreleased]
+## [1.1.1] - 2026-09-28
 
 Security, correctness and stability fixes: location corroboration,
 rechecks and fork checks, and what one hostile client or key can make a
@@ -225,7 +225,7 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
-[Unreleased]: https://github.com/Aelthorim/witness/compare/v1.1.0...HEAD
+[1.1.1]: https://github.com/Aelthorim/witness/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
 [1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0
