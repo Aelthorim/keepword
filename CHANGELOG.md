@@ -4,6 +4,45 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
+## [1.0.1] - 2026-09-28
+
+Security fixes. Upgrading is recommended for every witness; nothing
+changes in the protocol or the stored data.
+
+### Fixed
+
+- **Sybil keys could invent networks.** Location corroboration counted
+  observers by key, and keys are free: one server with 20 keys could
+  vouch that each of its keys sat in a different network, and verdicts
+  and assignment then counted 20 independent witnesses. A node now
+  trusts where it saw a witness connect itself, and otherwise counts only
+  observers it has seen connect, once per network.
+- **One witness could blind a verdict.** The comparison window was
+  anchored at the newest attestation, so a single attestation dated in
+  the future pushed every honest one out of it. Future-dated attestations
+  and ones older than their own drand beacon are now rejected, and the
+  window compared is the one covering the most independent networks.
+- **Extra keys could crowd out honest witnesses.** When captures used
+  different methods or normalizer profiles, the class with the most keys
+  was compared. It is now the class with the most networks.
+- **`witness verify` claimed more than it proved.** It printed VERIFIED
+  whenever no check failed, even for a bare signed attestation. It now
+  grades the result (SIGNED ONLY, LOGGED, LOGGED + COSIGNED) and says in
+  plain words what the bundle shows and what it doesn't, in the CLI, the
+  JSON output and the web UI. Cosignatures are reported as "other keys",
+  since a bundle alone can't show whose keys they are.
+
+### Known limitations
+
+- A log that shows different auditors histories of *different* sizes is
+  not yet detected; only same-size forks are. The 1.0.0 notes overstated
+  this.
+- A witness that really connects from many networks (rented servers or
+  proxies) still counts as many. Corroborated location shows where a
+  witness connects from, not that its captures are independent.
+- Reputation is informational only; it doesn't affect assignment or
+  verdicts.
+
 ## [1.0.0] - 2026-09-28
 
 The first stable release: a working network of independent witnesses that
@@ -58,4 +97,5 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0

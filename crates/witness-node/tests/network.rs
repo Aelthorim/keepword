@@ -165,7 +165,11 @@ async fn four_witnesses() {
         .find(|c| c.name == "cosignatures")
         .unwrap();
     assert_eq!(cos.status, Status::Pass, "{}", cos.detail);
-    assert!(cos.detail.contains("3 other witnesses"));
+    assert!(cos.detail.contains("3 other keys"));
+    assert_eq!(
+        report.strength(),
+        Some(witness_core::bundle::Strength::Cosigned)
+    );
 
     // Pushes produced observation receipts, and they flooded.
     let b_key = nodes[1].node.key.public();

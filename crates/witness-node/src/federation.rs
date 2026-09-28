@@ -353,9 +353,27 @@ impl Node {
     /// observation receipts, or self-reported if the config allows it.
     pub fn location_of(&self, key: &WitnessKey, now: i64) -> Result<Option<Location>> {
         if let Some(db) = &self.asn_db {
-            let obs = self.store.observations_of(key, now - 30 * 86_400_000)?;
-            if let Some(loc) = vantage::corroborate(key, &obs, db, self.config.quorum.min_observers)
-            {
+            let me = self.key.public();
+            let since = now - 30 * 86_400_000;
+            let obs = self.store.observations_of(key, since)?;
+            // The network each observer connects from, as this node saw it.
+            let observer_asn = |observer: &WitnessKey| {
+                self.store
+                    .observation(observer, &me)
+                    .ok()
+                    .flatten()
+                    .filter(|o| o.body.observed_at_ms >= since)
+                    .and_then(|o| db.lookup(o.body.ip))
+                    .map(|(asn, _)| asn)
+            };
+            if let Some(loc) = vantage::corroborate(
+                key,
+                &me,
+                &obs,
+                db,
+                self.config.quorum.min_observers,
+                observer_asn,
+            ) {
                 return Ok(Some(loc));
             }
         }
@@ -373,6 +391,7 @@ impl Node {
                     asn,
                     country: v.country.unwrap_or_else(|| "??".into()),
                     observers: 0,
+                    direct: false,
                 }));
             }
         }
@@ -999,6 +1018,7 @@ impl Node {
             for sa in r.unwrap_or_default() {
                 if sa.attestation.witness == k
                     && sa.attestation.url == url.as_str()
+                    && crate::consensus::plausible_time(&sa.attestation, now)
                     && sa.verify().is_ok()
                     && self.store.foreign_insert(&sa)?
                 {

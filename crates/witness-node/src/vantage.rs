@@ -75,41 +75,69 @@ impl AsnDb {
 pub struct Location {
     pub asn: u32,
     pub country: String,
+    /// Independent networks whose observers agree on it; 0 when
+    /// self-reported.
     pub observers: usize,
+    /// This node saw the witness connect from there itself.
+    #[serde(default)]
+    pub direct: bool,
 }
 
 impl std::fmt::Display for Location {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.observers {
-            0 => write!(f, "AS{} {} (self-reported)", self.asn, self.country),
-            n => write!(f, "AS{} {} ({n} observers)", self.asn, self.country),
+        match (self.direct, self.observers) {
+            (true, _) => write!(f, "AS{} {} (seen directly)", self.asn, self.country),
+            (false, 0) => write!(f, "AS{} {} (self-reported)", self.asn, self.country),
+            (false, n) => write!(f, "AS{} {} ({n} observer networks)", self.asn, self.country),
         }
     }
 }
 
-/// The ASN most independent observers saw `subject` connect from, if at
-/// least `min_observers` agree. Self-observations don't count.
+/// Where `subject` connects from, as far as `me` can tell.
+///
+/// Keys are free, so observers are never counted as such. Instead:
+///
+/// 1. If `me` has seen `subject` connect itself, that settles it: no
+///    number of other keys can outvote what this node saw.
+/// 2. Otherwise, observations count only from observers this node has
+///    seen connect itself, and once per network those observers are in
+///    (`observer_asn`). Twenty keys on one server are one observer, so
+///    they can't vouch each other into twenty networks.
 pub fn corroborate(
     subject: &WitnessKey,
+    me: &WitnessKey,
     observations: &[Signed<Observation>],
     db: &AsnDb,
     min_observers: usize,
+    observer_asn: impl Fn(&WitnessKey) -> Option<u32>,
 ) -> Option<Location> {
-    let mut by_asn: BTreeMap<(u32, String), BTreeSet<WitnessKey>> = BTreeMap::new();
-    for o in observations {
-        let b = &o.body;
-        if b.subject != *subject || b.observer == *subject || o.verify().is_err() {
+    let valid = observations
+        .iter()
+        .filter(|o| o.body.subject == *subject && o.body.observer != *subject)
+        .filter(|o| o.verify().is_ok());
+    let mut by_asn: BTreeMap<(u32, String), BTreeSet<u32>> = BTreeMap::new();
+    for o in valid {
+        let Some(loc) = db.lookup(o.body.ip) else {
             continue;
+        };
+        if o.body.observer == *me && subject != me {
+            return Some(Location {
+                asn: loc.0,
+                country: loc.1,
+                observers: 1,
+                direct: true,
+            });
         }
-        if let Some(loc) = db.lookup(b.ip) {
-            by_asn.entry(loc).or_default().insert(b.observer);
+        if let Some(net) = observer_asn(&o.body.observer) {
+            by_asn.entry(loc).or_default().insert(net);
         }
     }
-    let ((asn, country), obs) = by_asn.into_iter().max_by_key(|(_, o)| o.len())?;
-    (obs.len() >= min_observers).then_some(Location {
+    let ((asn, country), nets) = by_asn.into_iter().max_by_key(|(_, n)| n.len())?;
+    (nets.len() >= min_observers).then_some(Location {
         asn,
         country,
-        observers: obs.len(),
+        observers: nets.len(),
+        direct: false,
     })
 }
 
@@ -156,30 +184,66 @@ mod tests {
     #[test]
     fn needs_independent_observers() {
         let db = AsnDb::parse(DB).unwrap();
-        let s = Keypair::generate().unwrap();
-        let (o1, o2, o3) = (
-            Keypair::generate().unwrap(),
-            Keypair::generate().unwrap(),
-            Keypair::generate().unwrap(),
-        );
+        let new_key = || Keypair::generate().unwrap();
+        let (me, s, o1, o2, o3) = (new_key(), new_key(), new_key(), new_key(), new_key());
+        // I saw o1 on Cloudflare's network, o2 and o3 on Deutsche Telekom's.
+        let net = |k: &WitnessKey| match k {
+            k if *k == o1.public() => Some(13335),
+            k if *k == o2.public() || *k == o3.public() => Some(3320),
+            _ => None,
+        };
+        let loc =
+            |v: &[Signed<Observation>]| corroborate(&s.public(), &me.public(), v, &db, 2, net);
+
         // Self-observation and a single observer are not enough.
-        let v = vec![obs(&s, &s, "80.130.1.2"), obs(&s, &o1, "80.130.1.2")];
-        assert_eq!(corroborate(&s.public(), &v, &db, 2), None);
-        // Two observers agree; a third saw it elsewhere.
-        let v = vec![
-            obs(&s, &o1, "80.130.1.2"),
-            obs(&s, &o2, "80.140.9.9"),
-            obs(&s, &o3, "1.0.0.1"),
-        ];
-        let loc = corroborate(&s.public(), &v, &db, 2).unwrap();
         assert_eq!(
-            (loc.asn, loc.country.as_str(), loc.observers),
-            (3320, "DE", 2)
+            loc(&[obs(&s, &s, "80.130.1.2"), obs(&s, &o1, "80.130.1.2")]),
+            None
         );
+        // Two observers, but both on one network: that's one observer.
+        assert_eq!(
+            loc(&[obs(&s, &o2, "80.130.1.2"), obs(&s, &o3, "80.130.1.2")]),
+            None
+        );
+        // Observers on two networks agree.
+        let l = loc(&[obs(&s, &o1, "80.130.1.2"), obs(&s, &o2, "80.140.9.9")]).unwrap();
+        assert_eq!(
+            (l.asn, l.country.as_str(), l.observers, l.direct),
+            (3320, "DE", 2, false)
+        );
+        // Observers this node never saw don't count at all.
+        let (x, y) = (new_key(), new_key());
+        assert_eq!(loc(&[obs(&s, &x, "1.0.0.1"), obs(&s, &y, "1.0.0.1")]), None);
         // Forged receipts are ignored.
-        let mut forged = obs(&s, &o3, "80.130.1.2");
+        let mut forged = obs(&s, &o2, "80.130.1.2");
         forged.body.ip = "1.0.0.9".parse().unwrap();
-        let v = vec![obs(&s, &o1, "1.0.0.1"), forged];
-        assert_eq!(corroborate(&s.public(), &v, &db, 2), None);
+        assert_eq!(loc(&[obs(&s, &o1, "1.0.0.1"), forged]), None);
+    }
+
+    /// One server, twenty keys, each vouching that the others are on
+    /// twenty different networks.
+    #[test]
+    fn sybil_observers_cannot_invent_networks() {
+        let db = AsnDb::parse(DB).unwrap();
+        let me = Keypair::generate().unwrap();
+        let sybils: Vec<Keypair> = (0..20).map(|_| Keypair::generate().unwrap()).collect();
+        let fake_ips = ["1.0.0.1", "80.130.1.2", "2001:db8::10"];
+        let mut v = Vec::new();
+        for (i, s) in sybils.iter().enumerate() {
+            for o in sybils.iter().filter(|o| o.public() != s.public()) {
+                v.push(obs(s, o, fake_ips[i % fake_ips.len()]));
+            }
+        }
+        // This node saw every one of them connect from the same server.
+        let real = |_: &WitnessKey| Some(13335);
+        for s in &sybils {
+            let l = corroborate(&s.public(), &me.public(), &v, &db, 2, real);
+            assert_eq!(l, None, "sybils vouched each other into a network");
+        }
+        // And once they push to this node directly, it sees where they are.
+        let mut mine = v.clone();
+        mine.push(obs(&sybils[0], &me, "1.0.0.9"));
+        let l = corroborate(&sybils[0].public(), &me.public(), &mine, &db, 2, real).unwrap();
+        assert_eq!((l.asn, l.direct), (13335, true));
     }
 }

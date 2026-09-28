@@ -148,6 +148,113 @@ impl Report {
     pub fn ok(&self) -> bool {
         self.checks.iter().all(|c| c.status != Status::Fail)
     }
+
+    fn passed(&self, name: &str) -> Option<&Check> {
+        self.checks
+            .iter()
+            .find(|c| c.name == name && c.status == Status::Pass)
+    }
+
+    /// How far a bundle that passed every check reaches; `None` if a
+    /// check failed. "No check failed" alone says little: a bare signed
+    /// attestation passes too.
+    pub fn strength(&self) -> Option<Strength> {
+        if !self.ok() || self.passed("signature").is_none() {
+            return None;
+        }
+        Some(
+            match (
+                self.passed("log inclusion").is_some(),
+                self.passed("cosignatures").is_some(),
+            ) {
+                (true, true) => Strength::Cosigned,
+                (true, false) => Strength::Logged,
+                _ => Strength::SignedOnly,
+            },
+        )
+    }
+
+    /// In plain words, what a passing bundle shows, and what it doesn't.
+    pub fn summary(&self) -> Summary {
+        let mut shows = Vec::new();
+        let mut not = Vec::new();
+        if let Some(c) = self.passed("signature") {
+            shows.push(format!(
+                "a witness ({}) signed that it saw this page at the stated time",
+                c.detail.trim_start_matches("signed by witness ")
+            ));
+        }
+        if self.passed("log inclusion").is_some() {
+            shows.push("the statement is in that witness's append-only public log".into());
+        } else {
+            not.push(
+                "that the witness recorded it publicly: without its log, it could sign contradicting statements".into(),
+            );
+        }
+        if let Some(c) = self.passed("cosignatures") {
+            shows.push(format!("{}, vouching for that log's history", c.detail));
+            not.push(
+                "who the cosigners are: this bundle can't tell independent witnesses from keys the same operator controls".into(),
+            );
+        }
+        match self.passed("not before") {
+            Some(c) => shows.push(c.detail.clone()),
+            None => not.push("an earliest time (no drand beacon)".into()),
+        }
+        match self.passed("anchor") {
+            Some(c) => shows.push(c.detail.clone()),
+            None => not.push("a Bitcoin-confirmed latest time (no checked anchor)".into()),
+        }
+        if self.passed("tls notary").is_some() {
+            shows.push(
+                "a second witness took part in the TLS connection and confirms the server sent this content".into(),
+            );
+        } else {
+            not.push(
+                "that the website really sent it: a dishonest witness could have made the content up".into(),
+            );
+        }
+        if self.passed("body").is_some() || self.passed("normalized").is_some() {
+            shows.push("the included content is exactly what was signed".into());
+        }
+        not.push(
+            "that independent witnesses saw the same: `witness verdict` shows that, and bundles don't carry it yet".into(),
+        );
+        Summary {
+            strength: self.strength(),
+            shows,
+            does_not_show: not,
+        }
+    }
+}
+
+/// How far a bundle's evidence reaches, weakest first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strength {
+    /// Only the witness's signature.
+    SignedOnly,
+    /// Also in the witness's append-only log.
+    Logged,
+    /// Also cosigned by other keys.
+    Cosigned,
+}
+
+impl Strength {
+    pub fn label(self) -> &'static str {
+        match self {
+            Strength::SignedOnly => "SIGNED ONLY",
+            Strength::Logged => "LOGGED",
+            Strength::Cosigned => "LOGGED + COSIGNED",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Summary {
+    pub strength: Option<Strength>,
+    pub shows: Vec<String>,
+    pub does_not_show: Vec<String>,
 }
 
 impl Bundle {
@@ -336,7 +443,11 @@ fn check_cosignatures(r: &mut Report, th: &SignedTreeHead, cosigs: &[Signed<Cosi
         r.push(
             "cosignatures",
             Status::Pass,
-            format!("tree head cosigned by {} other witnesses", good.len()),
+            format!(
+                "tree head cosigned by {} other key{}",
+                good.len(),
+                if good.len() == 1 { "" } else { "s" }
+            ),
         );
     }
 }
@@ -478,5 +589,49 @@ fn check_bytes(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strength_reflects_what_passed() {
+        let mut r = Report::default();
+        r.push("signature", Status::Pass, "signed by witness abc");
+        r.push("log inclusion", Status::Skip, "no inclusion proof");
+        r.push("cosignatures", Status::Skip, "none");
+        assert_eq!(r.strength(), Some(Strength::SignedOnly));
+        let s = r.summary();
+        assert!(
+            s.does_not_show
+                .iter()
+                .any(|l| l.contains("recorded it publicly"))
+        );
+        assert!(
+            s.does_not_show
+                .iter()
+                .any(|l| l.contains("made the content up"))
+        );
+
+        let mut r = Report::default();
+        r.push("signature", Status::Pass, "signed by witness abc");
+        r.push("log inclusion", Status::Pass, "leaf 1 of 2");
+        r.push(
+            "cosignatures",
+            Status::Pass,
+            "tree head cosigned by 3 other keys",
+        );
+        assert_eq!(r.strength(), Some(Strength::Cosigned));
+        assert!(
+            r.summary()
+                .does_not_show
+                .iter()
+                .any(|l| l.contains("same operator"))
+        );
+
+        r.push("body", Status::Fail, "hash mismatch");
+        assert_eq!(r.strength(), None);
     }
 }

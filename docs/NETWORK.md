@@ -20,7 +20,7 @@ So a real network needs:
 
 | Requirement | Why |
 |---|---|
-| **At least 3 witnesses, each in a different ASN** | "Agreed" needs 3 ASNs (`quorum.min_asns`), and each witness's location has to be confirmed by 2 others (`quorum.min_observers`). |
+| **At least 3 witnesses, each in a different ASN** | "Agreed" needs 3 ASNs (`quorum.min_asns`), and a witness's location is confirmed by the peers it connects to: a peer that saw it directly, or observers on 2 other networks (`quorum.min_observers`). |
 | **At least 2 countries** | Assignment takes at most 2 witnesses per country (`network.max_per_country`). With the default 5 witnesses per request, 3 or more countries fill every slot. |
 | **Different operators** | The software can only check networks. Witnesses run by one person agree because one person runs them. For evidence others trust, each witness should be run by a different person or organization. |
 | **A public HTTPS endpoint on every witness** | Peers audit a witness's log and fetch its attestations through its endpoint. A witness without one is never assigned requests and doesn't count toward verdicts. |
@@ -93,7 +93,7 @@ witness net status
 
 `witness net peers` should list every other witness with a log size, a
 recent `last sync`, no error, and a location like
-`AS16276 FR (2 observers)`. `witness net status` should show:
+`AS16276 FR (seen directly)`. `witness net status` should show:
 
 - `location` with an ASN and observers, not `not corroborated`;
 - `candidates` equal to the number of witnesses;
