@@ -17,8 +17,8 @@ milestones ahead.
 | Publisher | Edits a page and denies the earlier version | Signed attestations in append-only logs; timestamps anchored externally |
 | Publisher | Serves witnesses a clean version and real users something else (cloaking) | Many witnesses from independent networks at the same moment; rendered captures; disagreement is itself evidence |
 | Malicious witness | Fabricates a snapshot to frame a site | Quorum across independent operators; TLSNotary proofs for high-value captures; logs make lies permanent and attributable |
-| Sybil | Spins up many keys to fake consensus | Trust counts networks, not keys; assignment by unpredictable per-epoch randomness; reputation that takes time to build |
-| Log operator | Rewrites or forks their own history | Consistency proofs, tree-head gossip, cosigning, Bitcoin anchoring |
+| Sybil | Spins up many keys to fake consensus | Trust counts networks, not keys, and a network is only counted from what a node saw itself (§6.3); assignment by unpredictable per-epoch randomness. **Not** defended: one operator who really connects from many networks (§6.3) |
+| Log operator | Rewrites or forks their own history | Consistency proofs, checkpoint gossip, cosigning, Bitcoin anchoring. Same-size forks are proven; forks whose branches never share a size are **not yet** detected (§9) |
 | Requester | Uses witnesses as a proxy to attack LANs or other sites | Public-address-only resolver (**implemented**), rate limits, assignment instead of free choice |
 | Everyone | Legal exposure from hosting content | Hashes by default, opt-in retention, erasure that leaves logs intact (**implemented**) |
 
@@ -68,8 +68,9 @@ The original plan was sound. These are the places I changed it, and why.
    A node can claim any ASN. See §6.3 for corroboration. A related
    correction: faking many network locations is *not* hard. Residential
    proxy networks sell access to thousands of ASNs. ASN diversity raises
-   the cost of a Sybil attack but doesn't remove it. That is why reputation
-   (time-weighted) and TLSNotary still matter.
+   the cost of a Sybil attack but doesn't remove it. That is why TLSNotary,
+   and a list of known, independent operators (§9), still matter.
+   Reputation is computed but only shown; it is not a defence (§6.5).
 
 7. **Time needs a lower bound too.** Log inclusion plus OpenTimestamps
    gives an *upper* bound: the capture existed by then. A witness could
@@ -411,10 +412,14 @@ otherwise, so receipts don't grow with sync rounds. Without an ASN table
 nothing is corroborated. `quorum.trust_self_reported` exists for test networks
 only.
 
-What remains is the expensive version of the attack: really connecting
-from many networks, through proxies or rented servers at many providers.
-That costs money per network, and it is what the network's independence
-ultimately rests on (see below and §9).
+What remains is the expensive version of the attack, and no protocol
+closes it: really connecting from many networks, through proxies or rented
+servers at many providers. Observations prove where a witness *pushes
+gossip from*, not where it *captures from*. One server could push through
+twenty cheap proxies in twenty networks and do every capture from its own
+address, and it would count as twenty networks. So a corroborated location
+is not proof of independent evidence. It raises the cost per fake network;
+real independence comes from real, separate operators (§9).
 
 This establishes where a node *is* (its egress), not where each fetch came
 *from*. A malicious node can still fetch through a proxy, and no protocol
@@ -462,9 +467,13 @@ their recent attestations of it (`GET /v1/attestations?url=`). Nodes do
 this every quorum window for the URLs they capture for the network and the
 ones they requested, and `witness verdict` and the web UI do it on demand.
 
-For a URL, a node gathers its own and fetched attestations and takes the
-latest per witness inside a time window. It compares them within the
-largest class sharing capture method and normalizer profile, groups them by
+For a URL, a node gathers its own and fetched attestations, drops any
+dated in the future or before their own drand beacon, and takes the latest
+per witness inside a time window. The window compared is the one covering
+the most distinct networks, not the one ending at the newest attestation,
+so a single witness can't steer it with a false timestamp. It compares them within the
+class sharing capture method and normalizer profile that spans the most
+networks, groups them by
 comparison hash, and counts distinct corroborated ASNs, never keys:
 
 - **Agreed**: the top group reaches `min_asns`, no second group reaches
@@ -479,7 +488,11 @@ comparison hash, and counts distinct corroborated ASNs, never keys:
 - **Insufficient**: anything else.
 
 Reputation decays with a 14-day half-life, so it takes sustained agreement
-to build. **Silent-edit alerts** are raised by the capturing witness.
+to build. **Silent-edit alerts** are raised by the capturing witness. Reputation is **informational only**: it
+is shown in `witness net peers` and the web UI, but assignment and verdicts
+don't use it. Each node computes its own, so using it in assignment would
+break the agreement on who is assigned, and a lone honest witness that sees
+a localized page would be penalized.
 
 ### 6.6 Time: drand lower bound, Bitcoin upper bound
 
@@ -612,3 +625,27 @@ before public operation. The design aims to leave room for compliance.
 - **ASN table provenance.** Verifiers should agree on the IP→ASN table.
   Pinning its hash per epoch (and gossiping it) is straightforward, but not
   built.
+- **A list of known witnesses (planned before outside operators join).**
+  Offline verifiers can't tell independent cosigners from keys one operator
+  controls, and corroborated location can't tell independent operators from
+  one operator behind many proxies. A curated list of witness keys with
+  their operators, like Certificate Transparency's log list, would let
+  `witness verify`, cosignature counting, corroboration and verdicts count
+  known, independent people. It is a trust anchor the project would have to
+  govern openly.
+- **Forks of different sizes.** Auditors check each checkpoint against the
+  last one *they* saw, and same-size conflicts are proof. A log that shows
+  one group of auditors sizes 10, 12, 14 and another 11, 13, 15 is not yet
+  caught. Planned: when a node sees a gossiped checkpoint of a log it audits
+  at a size it hasn't verified, it asks the log for the consistency proof
+  between the two, and treats a log that can't give one like an
+  equivocating log. Requiring cosignatures from a majority of known
+  witnesses in `verify` closes the rest.
+- **Bundles that carry the verdict.** A bundle holds one witness's
+  attestation. A second format carrying the other witnesses' matching
+  attestations with their inclusion proofs would let the agreement itself
+  be verified offline.
+- **Cost of proofs.** The inclusion and consistency endpoints rebuild the
+  tree from every leaf on each request. That is fine at thousands of leaves
+  but an easy denial of service at millions: cache the tree levels or move
+  to tiles, and rate-limit the public API, before logs grow that large.

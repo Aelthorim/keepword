@@ -13,7 +13,7 @@ use crate::keys::WitnessKey;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct QuorumPolicy {
-    /// Only attestations this close to the newest one are compared.
+    /// Only attestations this close together in time are compared.
     pub window_ms: i64,
     /// Distinct ASNs needed for an agreed verdict.
     pub min_asns: usize,
@@ -60,6 +60,12 @@ pub struct Evaluation {
     pub verdict: Verdict,
     /// Attestations dropped for bad signatures or for naming another URL.
     pub rejected: usize,
+    /// Witnesses compared: the latest attestation of each inside the window.
+    #[serde(default)]
+    pub considered: usize,
+    /// End of the compared window (fetch time of its newest attestation).
+    #[serde(default)]
+    pub window_end_ms: Option<i64>,
 }
 
 /// Evaluate attestations of one URL. `asn_of` returns the *corroborated* ASN
@@ -84,21 +90,73 @@ pub fn evaluate(
         .map(|s| &s.attestation)
         .collect();
 
-    let newest = valid.iter().map(|a| a.fetched_at_ms).max().unwrap_or(0);
+    // Which window to compare: the one covering the most distinct
+    // networks (then the most witnesses, then the latest). Anchoring it at
+    // the newest attestation would let one witness with a future timestamp
+    // push everyone else out of it.
+    let mut timed: Vec<(&Attestation, Option<u32>)> =
+        valid.iter().map(|a| (*a, asn_of(a))).collect();
+    timed.sort_by_key(|(a, _)| a.fetched_at_ms);
+    let mut best: Option<(usize, usize, i64)> = None;
+    {
+        let mut asns: HashMap<u32, usize> = HashMap::new();
+        let mut keys: HashMap<WitnessKey, usize> = HashMap::new();
+        let mut left = 0;
+        for right in 0..timed.len() {
+            let (a, asn) = timed[right];
+            *keys.entry(a.witness).or_default() += 1;
+            if let Some(n) = asn {
+                *asns.entry(n).or_default() += 1;
+            }
+            let end = a.fetched_at_ms;
+            while end - timed[left].0.fetched_at_ms > policy.window_ms {
+                let (old, old_asn) = timed[left];
+                if let Some(c) = keys.get_mut(&old.witness) {
+                    *c -= 1;
+                    if *c == 0 {
+                        keys.remove(&old.witness);
+                    }
+                }
+                if let Some(n) = old_asn {
+                    if let Some(c) = asns.get_mut(&n) {
+                        *c -= 1;
+                        if *c == 0 {
+                            asns.remove(&n);
+                        }
+                    }
+                }
+                left += 1;
+            }
+            let score = (asns.len(), keys.len(), end);
+            if best.is_none_or(|b| score >= b) {
+                best = Some(score);
+            }
+        }
+    }
+    let Some((_, _, end)) = best else {
+        return Evaluation {
+            verdict: Verdict::Insufficient { groups: vec![] },
+            rejected,
+            considered: 0,
+            window_end_ms: None,
+        };
+    };
     // One (latest) attestation per witness inside the window.
     let mut latest: HashMap<WitnessKey, &Attestation> = HashMap::new();
     for a in valid
         .iter()
-        .filter(|a| newest - a.fetched_at_ms <= policy.window_ms)
+        .filter(|a| a.fetched_at_ms <= end && end - a.fetched_at_ms <= policy.window_ms)
     {
         let e = latest.entry(a.witness).or_insert(a);
         if a.fetched_at_ms > e.fetched_at_ms {
             *e = a;
         }
     }
+    let considered = latest.len();
 
     // Hashes are only comparable within one capture method and normalizer
-    // profile. Compare within the class that has the most witnesses.
+    // profile. Compare within the class with the most distinct networks, so
+    // extra keys using another method can't crowd out the others.
     let mut classes: BTreeMap<(u8, Option<Digest>), Vec<&Attestation>> = BTreeMap::new();
     for a in latest.values() {
         classes
@@ -106,10 +164,15 @@ pub fn evaluate(
             .or_default()
             .push(a);
     }
-    let Some(class) = classes.into_values().max_by_key(|v| v.len()) else {
+    let Some(class) = classes.into_values().max_by_key(|v| {
+        let nets: BTreeSet<u32> = v.iter().filter_map(|a| asn_of(a)).collect();
+        (nets.len(), v.len())
+    }) else {
         return Evaluation {
             verdict: Verdict::Insufficient { groups: vec![] },
             rejected,
+            considered,
+            window_end_ms: Some(end),
         };
     };
 
@@ -146,7 +209,12 @@ pub fn evaluate(
     } else {
         Verdict::Insufficient { groups }
     };
-    Evaluation { verdict, rejected }
+    Evaluation {
+        verdict,
+        rejected,
+        considered,
+        window_end_ms: Some(end),
+    }
 }
 
 /// Convenience for callers that only have self-reported vantage data, such
@@ -266,5 +334,50 @@ mod tests {
         let e = evaluate(URL, &v, self_reported_asn, &QuorumPolicy::default());
         assert_eq!(e.rejected, 1);
         assert!(matches!(e.verdict, Verdict::Insufficient { .. }));
+    }
+
+    /// One witness dates its attestation a year ahead. The window must not
+    /// follow it and drop everyone else.
+    #[test]
+    fn a_future_timestamp_cannot_blind_the_verdict() {
+        let keys: Vec<Keypair> = (0..4).map(|_| Keypair::generate().unwrap()).collect();
+        let v = vec![
+            att(&keys[0], 1, b"page", 1_000_000),
+            att(&keys[1], 2, b"page", 1_060_000),
+            att(&keys[2], 3, b"page", 1_120_000),
+            att(&keys[3], 4, b"other", 1_000_000 + 365 * 86_400_000),
+        ];
+        let e = evaluate(URL, &v, self_reported_asn, &QuorumPolicy::default());
+        match e.verdict {
+            Verdict::Agreed { group, .. } => assert_eq!(group.asns.len(), 3),
+            other => panic!("expected agreement, got {other:?}"),
+        }
+        assert_eq!(e.considered, 3);
+    }
+
+    /// Five keys in one network use a different normalizer profile. Their
+    /// class has more keys, but fewer networks, so it isn't the one compared.
+    #[test]
+    fn the_class_with_most_networks_is_compared() {
+        let honest: Vec<Keypair> = (0..3).map(|_| Keypair::generate().unwrap()).collect();
+        let sybils: Vec<Keypair> = (0..5).map(|_| Keypair::generate().unwrap()).collect();
+        let mut v: Vec<SignedAttestation> = honest
+            .iter()
+            .enumerate()
+            .map(|(i, k)| att(k, i as u32 + 1, b"page", 1000))
+            .collect();
+        for k in &sybils {
+            let mut a = att(k, 9, b"fake", 1000).attestation;
+            a.norm = Some(NormCommitment {
+                profile: Digest::of(b"p2"),
+                hash: Digest::of(b"fake"),
+            });
+            v.push(a.sign(k).unwrap());
+        }
+        let e = evaluate(URL, &v, self_reported_asn, &QuorumPolicy::default());
+        match e.verdict {
+            Verdict::Agreed { group, .. } => assert_eq!(group.hash, Digest::of(b"page")),
+            other => panic!("expected the honest class to be compared, got {other:?}"),
+        }
     }
 }

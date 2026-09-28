@@ -386,7 +386,7 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             }
             if cli.json {
                 print_json(
-                    &serde_json::json!({ "ok": report.ok(), "attestation": b.attestation, "checks": report.checks }),
+                    &serde_json::json!({ "ok": report.ok(), "summary": report.summary(), "attestation": b.attestation, "checks": report.checks }),
                 )?;
             } else {
                 print_attestation_header(&b);
@@ -1201,12 +1201,19 @@ fn print_report(r: &Report) {
         };
         println!("  [{tag}] {:<14} {}", c.name, c.detail);
     }
-    println!(
-        "\n{}",
-        if r.ok() {
-            "VERIFIED"
-        } else {
-            "VERIFICATION FAILED"
+    let s = r.summary();
+    match s.strength {
+        None => println!("\nVERIFICATION FAILED"),
+        Some(level) => {
+            println!("\nVERIFIED: {}", level.label());
+            println!("\nThis bundle shows");
+            for line in &s.shows {
+                println!("  - {line}");
+            }
+            println!("It does not show");
+            for line in &s.does_not_show {
+                println!("  - {line}");
+            }
         }
-    );
+    }
 }

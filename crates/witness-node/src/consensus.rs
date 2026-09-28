@@ -10,7 +10,6 @@ use witness_core::{Digest, SignedAttestation, now_ms};
 
 use crate::Node;
 
-/// How far back verdicts look for attestations.
 /// How far back verdicts look.
 pub const LOOKBACK_MS: i64 = 7 * 86_400_000;
 
@@ -18,7 +17,7 @@ pub const LOOKBACK_MS: i64 = 7 * 86_400_000;
 pub struct VerdictView {
     pub url: String,
     pub evaluation: Evaluation,
-    /// Attestations considered (latest per witness inside the window).
+    /// Witnesses compared (latest attestation of each inside the window).
     pub considered: usize,
     /// Every witness involved and where it is, if known.
     pub witnesses: Vec<(String, Option<crate::vantage::Location>)>,
@@ -49,19 +48,17 @@ impl Node {
 
     pub fn verdict(&self, url: &str) -> Result<VerdictView> {
         let now = now_ms();
-        let atts = self.attestations_for(url, now - LOOKBACK_MS)?;
         let policy = self.quorum_policy();
-        let newest = atts
-            .iter()
-            .map(|a| a.attestation.fetched_at_ms)
-            .max()
-            .unwrap_or(now);
-        let recent: Vec<SignedAttestation> = atts
+        // Future-dated attestations, and ones claiming to predate their own
+        // drand beacon, can't be honest; they're left out rather than
+        // allowed to steer which window gets compared.
+        let atts: Vec<SignedAttestation> = self
+            .attestations_for(url, now - LOOKBACK_MS)?
             .into_iter()
-            .filter(|a| newest - a.attestation.fetched_at_ms <= policy.window_ms)
+            .filter(|a| plausible_time(&a.attestation, now))
             .collect();
         let mut locs = std::collections::HashMap::new();
-        for a in &recent {
+        for a in &atts {
             let k = a.attestation.witness;
             if let std::collections::hash_map::Entry::Vacant(e) = locs.entry(k) {
                 e.insert(self.location_of(&k, now)?);
@@ -69,17 +66,29 @@ impl Node {
         }
         let evaluation = quorum::evaluate(
             url,
-            &recent,
+            &atts,
             |a| locs.get(&a.witness).and_then(|l| l.as_ref()).map(|l| l.asn),
             &policy,
         );
-        let mut witnesses: Vec<(String, Option<crate::vantage::Location>)> =
-            locs.into_iter().map(|(k, l)| (k.to_hex(), l)).collect();
+        let in_window: std::collections::HashSet<_> = match evaluation.window_end_ms {
+            Some(end) => atts
+                .iter()
+                .map(|a| &a.attestation)
+                .filter(|a| a.fetched_at_ms <= end && end - a.fetched_at_ms <= policy.window_ms)
+                .map(|a| a.witness)
+                .collect(),
+            None => Default::default(),
+        };
+        let mut witnesses: Vec<(String, Option<crate::vantage::Location>)> = locs
+            .into_iter()
+            .filter(|(k, _)| in_window.contains(k))
+            .map(|(k, l)| (k.to_hex(), l))
+            .collect();
         witnesses.sort_by(|a, b| a.0.cmp(&b.0));
         Ok(VerdictView {
             url: url.to_string(),
+            considered: evaluation.considered,
             evaluation,
-            considered: recent.len(),
             witnesses,
         })
     }
@@ -94,13 +103,10 @@ impl Node {
             .foreign_urls_since(now - 2 * window.max(60_000))?
         {
             let v = self.verdict(&url)?;
-            let newest = self
-                .attestations_for(&url, now - LOOKBACK_MS)?
-                .iter()
-                .map(|a| a.attestation.fetched_at_ms)
-                .max()
-                .unwrap_or(now);
-            let slot = newest / window.max(1);
+            let Some(end) = v.evaluation.window_end_ms else {
+                continue;
+            };
+            let slot = end / window.max(1);
             match &v.evaluation.verdict {
                 Verdict::Agreed { group, dissenters } => {
                     for w in &group.witnesses {
@@ -160,4 +166,13 @@ impl Node {
         self.publish(Gossip::Alert(a))?;
         Ok(())
     }
+}
+
+/// Whether an attestation's claimed fetch time is believable: not in the
+/// future, and not before the drand round it embeds.
+pub fn plausible_time(a: &witness_core::Attestation, now_ms: i64) -> bool {
+    a.fetched_at_ms <= now_ms + crate::federation::SKEW_MS
+        && a.beacon
+            .as_ref()
+            .is_none_or(|b| b.time_ms() <= a.fetched_at_ms)
 }

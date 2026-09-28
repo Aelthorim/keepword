@@ -1,7 +1,7 @@
 [package]
 name = "witness-tlsn"
 description = "TLSNotary proof tier for Witness: a second witness notarizes the TLS session of a capture"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 # tlsn requires a recent toolchain.
 rust-version = "1.95"

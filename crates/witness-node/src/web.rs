@@ -385,11 +385,26 @@ async fn attestation_page(
         let hex: String = c.iter().map(|x| format!("{x:02x}")).collect();
         b.push_str(&format!("<p>TLS certificate: <a href='https://crt.sh/?sha256={hex}' rel=noreferrer>crt.sh</a></p>"));
     }
+    let summary = report.summary();
     b.push_str(&format!(
-        "<h2>Verification: <span class='{}'>{}</span></h2><table>",
+        "<h2>Verification: <span class='{}'>{}</span></h2>",
         if report.ok() { "pass" } else { "fail" },
-        if report.ok() { "verified" } else { "FAILED" }
+        summary
+            .strength
+            .map_or("FAILED".to_string(), |s| format!("verified, {}", s.label()))
     ));
+    if summary.strength.is_some() {
+        b.push_str("<p>This record shows:</p><ul>");
+        for line in &summary.shows {
+            b.push_str(&format!("<li>{}</li>", esc(line)));
+        }
+        b.push_str("</ul><p class=muted>It does not show:</p><ul class=muted>");
+        for line in &summary.does_not_show {
+            b.push_str(&format!("<li>{}</li>", esc(line)));
+        }
+        b.push_str("</ul>");
+    }
+    b.push_str("<table>");
     for c in &report.checks {
         let (cls, label) = match c.status {
             Status::Pass => ("pass", "ok"),

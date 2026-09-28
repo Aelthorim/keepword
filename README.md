@@ -75,19 +75,29 @@ Witness records it as a **silent edit**, and the proof checks out anywhere:
 $ witness verify --bundle evidence.json --esplora https://blockstream.info/api
   [ok  ] signature      signed by witness 7b757b5c…
   [ok  ] log inclusion  leaf 1187 of 1204
-  [ok  ] cosignatures   tree head cosigned by 16 other witnesses
+  [ok  ] cosignatures   tree head cosigned by 16 other keys
   [ok  ] not before     captured after 2026-05-01T09:14:03Z (drand round 5902114, 2s before the claimed time)
   [ok  ] anchor         tree head existed by Bitcoin block 947301
   [ok  ] body           41233 bytes, hash 4b768329a126
   ...
-VERIFIED
+VERIFIED: LOGGED + COSIGNED
+
+This bundle shows
+  - a witness (7b757b5c…) signed that it saw this page at the stated time
+  - the statement is in that witness's append-only public log
+  ...
+It does not show
+  - that independent witnesses saw the same: `witness verdict` shows that
+  ...
 ```
+
+Every check says exactly what it proves, and what it doesn't.
 
 ## Why you can trust it
 
 | You don't have to trust… | …because |
 |---|---|
-| **any single company** | Witnesses are run by independent people. A verdict only counts when witnesses on at least three different networks agree, so no single operator can fake one. |
+| **any single company** | Witnesses are run by independent people. A verdict only counts when witnesses on at least three different networks agree, so faking one takes three networks, not three keys. |
 | **anyone's promise** | Every record is signed and goes into a public, append-only log. Other witnesses check each log, so rewriting history gets caught, and the proof of it spreads to everyone. |
 | **anyone's clock** | Public randomness proves a record wasn't made *before* a moment; Bitcoin proves it existed *by* a later one. |
 | **Witness itself** | Evidence files check out on any computer, with no account, no server and no internet connection. |
@@ -141,9 +151,11 @@ No. Witnesses only fetch public pages that someone asked them to watch.
 They don't collect anything about visitors.
 
 **What if a witness lies?**
-Its record would disagree with the others, and the network notices. A
-witness that shows different histories to different people produces
-cryptographic proof against itself, and the network stops trusting it.
+Its record would disagree with the others, and the network notices: a
+verdict needs independent witnesses to agree. A witness that rewrites its
+public log gets caught by the witnesses that audit it, and the network
+stops trusting it. Evidence from a single witness is exactly that, and
+`witness verify` says so.
 
 **Can a website stop it?**
 A site can block witnesses, but that's visible too. And a site that shows

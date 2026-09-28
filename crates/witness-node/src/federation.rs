@@ -1018,6 +1018,7 @@ impl Node {
             for sa in r.unwrap_or_default() {
                 if sa.attestation.witness == k
                     && sa.attestation.url == url.as_str()
+                    && crate::consensus::plausible_time(&sa.attestation, now)
                     && sa.verify().is_ok()
                     && self.store.foreign_insert(&sa)?
                 {
