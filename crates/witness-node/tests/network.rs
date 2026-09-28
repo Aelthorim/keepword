@@ -591,3 +591,68 @@ async fn rechecks_settle_disputes() {
         "a repeated, confirmed split raises an alert everywhere"
     );
 }
+
+/// A log that forked into a bigger history can sign any number of honest
+/// heads of the history both forks share. Gossiping those first must not
+/// keep its auditors from reaching the head of the other fork.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forks_are_found_behind_a_flood_of_old_heads() {
+    let site = content_server().await;
+    let a = spawn(64501, "DE", "witness-a", vec![]).await;
+    let d = spawn(64504, "US", "witness-d", vec![a.endpoint.clone()]).await;
+    let nodes = [a, d];
+    sync_all(&nodes, 2).await;
+    for i in 0..12 {
+        nodes[1]
+            .node
+            .capture(&format!("{site}/page/{i}"), false)
+            .await
+            .unwrap();
+    }
+    // A audits D and verifies its head of size 12.
+    sync_all(&nodes, 1).await;
+    let d_node = &nodes[1].node;
+    let d_key = d_node.key.public();
+    let real = d_node.store.latest_tree_head().unwrap().unwrap();
+    assert_eq!(real.head.size, 12);
+    // Heads of the shared history, each consistent with everything.
+    for size in 1..=10u64 {
+        let root = d_node
+            .store
+            .with_merkle(|m| m.root(size as usize))
+            .unwrap()
+            .unwrap();
+        let h = TreeHead {
+            size,
+            root,
+            ..real.head.clone()
+        }
+        .sign(&d_node.key)
+        .unwrap();
+        assert!(nodes[0].node.ingest(Gossip::TreeHead(h)).unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    // Then the head another group of auditors saw.
+    let other = TreeHead {
+        size: real.head.size + 1000,
+        root: witness_core::Digest::of(b"another history"),
+        ..real.head.clone()
+    }
+    .sign(&d_node.key)
+    .unwrap();
+    assert!(nodes[0].node.ingest(Gossip::TreeHead(other)).unwrap());
+    let r = nodes[0].node.sync().await.unwrap();
+    assert!(
+        r.errors.iter().any(|(_, e)| e.contains("not consistent")),
+        "fork not found in the first audit after it arrived: {:?}",
+        r.errors
+    );
+    assert!(
+        nodes[0]
+            .node
+            .store
+            .equivocating_logs()
+            .unwrap()
+            .contains(&d_key)
+    );
+}

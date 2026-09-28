@@ -358,7 +358,10 @@ audits about 16 logs, whatever the network's size. Once per
    One that serves a proof that fails, refuses one (HTTP 4xx), or can't
    serve one for a day is treated like an equivocating log by this node.
    Unlike a same-size fork, this isn't a proof others can check offline,
-   so every auditor establishes it for itself.
+   so every auditor establishes it for itself. The biggest heads are
+   checked first: a forked log can sign any number of honest heads of the
+   history its forks share, and checking oldest first would let those
+   crowd out the heads that expose it.
 
 This is how Certificate Transparency's witnesses work. The earlier design
 mirrored every peer's log and attestations and gossiped every

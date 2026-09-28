@@ -485,7 +485,13 @@ impl Store {
     }
 
     /// Gossiped heads of `log` this node hasn't yet checked against its
-    /// own audit, oldest first, with when each was received.
+    /// own audit, largest first, with when each was received.
+    ///
+    /// Largest first, because a log that forked can sign any number of
+    /// heads of the history its forks share, and those all check out; the
+    /// heads that can expose the fork are the newer, bigger ones. It can't
+    /// flood bigger heads instead: those belong to one fork, and the
+    /// auditors of the other fork catch them.
     pub fn log_heads_unchecked(
         &self,
         log: &WitnessKey,
@@ -494,7 +500,7 @@ impl Store {
         let db = self.db();
         let mut st = db.prepare(
             "SELECT json, received_at FROM log_heads WHERE log = ?1 AND checked = 0
-             ORDER BY received_at LIMIT ?2",
+             ORDER BY size DESC LIMIT ?2",
         )?;
         let rows = st.query_map(params![log.0.as_slice(), limit], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))

@@ -20,6 +20,10 @@ data; upgrading is recommended for every witness.
   where it saw that witness connect itself; receipts only tell a node
   where it is itself. New witnesses count at every node once they have
   pushed to it, within about a day.
+- **A forked log could hide behind its own old heads.** Auditors checked
+  gossiped heads oldest first, eight per audit, so a log could sign heads
+  of the history its forks share (all consistent) and gossip them ahead of
+  the ones that exposed it. The biggest heads are now checked first.
 
 ## [1.1.0] - 2026-09-28
 
