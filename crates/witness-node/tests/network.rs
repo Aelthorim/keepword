@@ -356,6 +356,44 @@ async fn four_witnesses() {
     // A stops trusting B for assignment.
     let cands = nodes[0].node.candidates(witness_core::now_ms()).unwrap();
     assert!(!cands.iter().any(|c| c.key == b_key));
+
+    // A fork of another size: D also signed a bigger head, of a history its
+    // auditors never saw. C, which audits D, asks D to prove it consistent
+    // with the head C verified itself; D can't, and C stops trusting it.
+    let d_node = &nodes[3].node;
+    let d_key = d_node.key.public();
+    let real = d_node.store.latest_tree_head().unwrap().unwrap();
+    let other = TreeHead {
+        size: real.head.size + 1000,
+        root: witness_core::Digest::of(b"another history"),
+        ..real.head.clone()
+    }
+    .sign(&d_node.key)
+    .unwrap();
+    assert!(nodes[2].node.ingest(Gossip::TreeHead(other)).unwrap());
+    let r = nodes[2].node.sync().await.unwrap();
+    assert!(
+        r.errors.iter().any(|(_, e)| e.contains("not consistent")),
+        "fork not detected: {:?}",
+        r.errors
+    );
+    assert!(
+        nodes[2]
+            .node
+            .store
+            .equivocating_logs()
+            .unwrap()
+            .contains(&d_key)
+    );
+    // Only C verified it so far; the others check for themselves.
+    assert!(
+        !nodes[0]
+            .node
+            .store
+            .equivocating_logs()
+            .unwrap()
+            .contains(&d_key)
+    );
 }
 
 /// Larger networks: each round talks to a random sample of peers, and each

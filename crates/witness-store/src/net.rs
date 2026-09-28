@@ -208,6 +208,19 @@ CREATE TABLE failed_claims (
     at         INTEGER NOT NULL,
     PRIMARY KEY (prefix, url, window_end)
 );
+
+-- Whether this node has checked a gossiped head against the log's head it
+-- audited itself (a consistency proof between the two sizes).
+ALTER TABLE log_heads ADD COLUMN checked INTEGER NOT NULL DEFAULT 0;
+
+-- Logs that couldn't prove two of their own heads consistent: they showed
+-- different auditors different histories. Established by this node's own
+-- verification only.
+CREATE TABLE inconsistent_logs (
+    log         BLOB PRIMARY KEY,
+    detail      TEXT NOT NULL,
+    detected_at INTEGER NOT NULL
+);
 "#;
 
 /// How long pruned data is kept.
@@ -469,6 +482,50 @@ impl Store {
             ],
         )?;
         Ok(None)
+    }
+
+    /// Gossiped heads of `log` this node hasn't yet checked against its
+    /// own audit, oldest first, with when each was received.
+    pub fn log_heads_unchecked(
+        &self,
+        log: &WitnessKey,
+        limit: u32,
+    ) -> Result<Vec<(SignedTreeHead, i64)>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT json, received_at FROM log_heads WHERE log = ?1 AND checked = 0
+             ORDER BY received_at LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![log.0.as_slice(), limit], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        rows.map(|r| {
+            let (j, at) = r?;
+            Ok((json(&j)?, at))
+        })
+        .collect()
+    }
+
+    pub fn log_head_mark_checked(&self, log: &WitnessKey, size: u64) -> Result<()> {
+        self.db().execute(
+            "UPDATE log_heads SET checked = 1 WHERE log = ?1 AND size = ?2",
+            params![log.0.as_slice(), size as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Record that `log` failed to prove its heads consistent. Returns
+    /// whether this is news.
+    pub fn inconsistency_insert(
+        &self,
+        log: &WitnessKey,
+        detail: &str,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.db().execute(
+            "INSERT OR IGNORE INTO inconsistent_logs (log, detail, detected_at) VALUES (?1, ?2, ?3)",
+            params![log.0.as_slice(), detail, now_ms],
+        )? > 0)
     }
 
     // --------------------------------------------- foreign attestations
@@ -820,9 +877,13 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// Logs shown to have told different auditors different histories:
+    /// by two signed heads of the same size (proof anyone can check), or by
+    /// failing to prove two of its heads consistent to this node.
     pub fn equivocating_logs(&self) -> Result<Vec<WitnessKey>> {
         let db = self.db();
-        let mut st = db.prepare("SELECT DISTINCT log FROM equivocations")?;
+        let mut st =
+            db.prepare("SELECT log FROM equivocations UNION SELECT log FROM inconsistent_logs")?;
         let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0))?;
         Ok(rows
             .collect::<rusqlite::Result<Vec<_>>>()?
