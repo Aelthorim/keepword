@@ -15,7 +15,7 @@ pub const CONFIG_FILE: &str = "witness.toml";
 /// Witnesses a new node dials to join the public network when it knows
 /// few peers. Any witness works as a seed; these are ones run by the
 /// project. After joining, a node learns the rest through gossip.
-pub const DEFAULT_SEEDS: &[&str] = &[];
+pub const DEFAULT_SEEDS: &[&str] = &["https://w1.kxnode.net"];
 pub const KEY_FILE: &str = "witness.key";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
