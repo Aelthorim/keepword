@@ -680,7 +680,7 @@ impl Node {
                 )
             })
             .collect();
-        ranked.sort_by(|a, b| a.0.cmp(&b.0));
+        ranked.sort_by_key(|a| a.0);
         let fanout = self.config.network.gossip_fanout;
         let targets: Vec<(Peer, bool)> = ranked
             .into_iter()
