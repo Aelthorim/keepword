@@ -152,7 +152,9 @@ They don't collect anything about visitors.
 
 **What if a witness lies?**
 Its record would disagree with the others, and the network notices: a
-verdict needs independent witnesses to agree. A witness that rewrites its
+verdict needs independent witnesses to agree. When witnesses disagree,
+others picked at random (so nobody can choose them) look at the page again,
+and only what they can reproduce counts. A witness that rewrites its
 public log gets caught by the witnesses that audit it, and the network
 stops trusting it. Evidence from a single witness is exactly that, and
 `witness verify` says so.
@@ -184,8 +186,10 @@ anyone can verify offline, without trusting the node.
 Witnesses federate: each log is audited by 16 others, which check its
 checkpoints with consistency proofs and cosign them. Watch requests are
 assigned by public randomness, witnesses corroborate each other's network
-location, and they compare what they saw. When independent networks see
-different content at the same moment, the network raises a split alert.
+location, and they compare what they saw. When they disagree, witnesses
+drawn at random from the same countries recheck the page, and only versions
+they reproduce count. A difference that is confirmed again and again raises
+a split alert.
 Captures carry a drand beacon, which proves they happened *after* a point
 in time. Logs are anchored in Bitcoin through OpenTimestamps, which proves
 the captures existed *before* a later point.
@@ -384,9 +388,12 @@ Integration tests run everything over real HTTP on localhost:
   edits, bundles, tampering, redirects, audit, erasure)
 - `network.rs`: four witnesses in four ASNs (discovery, log audits,
   cosigning, observation receipts, assigned watch requests, replacing and
-  withdrawing them, dropping gossip from strangers, a cloaking server
-  producing a split verdict and alert, equivocation detection), and a
-  six-node network with one-peer gossip samples and two auditors per log
+  withdrawing them, dropping gossip from strangers, a disagreement nobody
+  can recheck staying disputed, equivocation and forks of different
+  sizes), a six-node network with one-peer gossip samples and two auditors
+  per log, and a twelve-node network in two countries where rechecks
+  overrule a lone dissenter and confirm, then alert on, a real regional
+  difference
 - `anchoring.rs`: drand beacons and Bitcoin anchoring against mock drand,
   OpenTimestamps and Esplora services
 - `witness-normalize/tests/corpus.rs`: the normalizer regression corpus

@@ -4,6 +4,52 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
+## [1.1.0] - 2026-09-28
+
+Disagreements are now settled by reproduction instead of by vote. Upgrade
+every witness; 1.0.x witnesses keep working alongside 1.1.0 ones but don't
+take part in rechecks.
+
+### Added
+
+- **Rechecks.** When the witnesses assigned to a URL disagree, the round
+  is *disputed*, and witnesses drawn at random from the reporters'
+  countries, one per network and none of them assigned, capture the page
+  again. Only versions they reproduce count: a real regional difference is
+  confirmed as a split, and a made-up one is overruled. The draw uses
+  drand and a fixed slot of time, so nobody can pick or retry it. New
+  verdict: `DISPUTED`, while rechecks run or when nothing could be
+  confirmed. See DESIGN.md §6.5.
+- **Split alerts need repeated confirmation**: 3 of the last 4 settled
+  recheck rounds for the URL (`quorum.split_confirmations`,
+  `quorum.split_rounds`).
+- **Failed claims.** A version the rechecks could have reproduced and
+  didn't counts against the network address it came from; after 5 in a
+  week (`quorum.max_failed_claims`) that network is left out of verdicts.
+- **Forks of different sizes are detected.** Auditors check the heads
+  other auditors report for a log against the one they verified; a log
+  that can't prove them consistent is excluded and alerted on.
+- **Rate limit on the public API**: 600 requests a minute per address
+  (`network.api_requests_per_minute`), answered with HTTP 429 beyond that.
+
+### Changed
+
+- Only the witnesses assigned to a URL count in its verdict.
+- Log proofs, bundles and new tree heads cost O(log n) instead of a pass
+  over the whole log, so large logs stay fast and the proof endpoints
+  can't be used to exhaust a node.
+- Verdict JSON has a `groups` list (every version compared) and a
+  `rechecks` count.
+
+### Known limitations
+
+- A difference seen only from one country is only confirmed if that
+  country has at least 3 witnesses on different networks beyond the ones
+  assigned. Small networks show `DISPUTED` where 1.0 showed `SPLIT`.
+- A country where one operator runs most witnesses decides what is seen
+  from there, and a round whose assigned witnesses are all one operator's
+  agrees on whatever they say.
+
 ## [1.0.1] - 2026-09-28
 
 Security fixes. Upgrading is recommended for every witness; nothing
@@ -97,5 +143,6 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
 [1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0
