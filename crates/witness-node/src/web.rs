@@ -139,8 +139,11 @@ fn page(title: &str, body: &str) -> Html<String> {
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content='width=device-width,initial-scale=1'>\
          <title>{} · Witness</title><style>{CSS}</style></head>\
-         <body><main><p class=muted><a href='/'>Witness</a> · <a href='/network'>Network</a> · <a href='/alerts'>Alerts</a></p>{body}</main></body></html>",
-        esc(title)
+         <body><main><p class=muted><a href='/'>Witness</a> · <a href='/network'>Network</a> · <a href='/alerts'>Alerts</a></p>{body}\
+         <p class=muted>Witness {} · free software under the AGPL-3.0 · <a href='{}'>source code</a></p></main></body></html>",
+        esc(title),
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_REPOSITORY"),
     ))
 }
 

@@ -5,6 +5,7 @@
 <p align="center">
   <a href="https://github.com/Aelthorim/witness/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/witness/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/written%20in-Rust-dea584" alt="Written in Rust">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/network-early%20days-8b7bff" alt="Network: early days">
 </p>
 
@@ -131,7 +132,7 @@ a single command. Checking a proof takes the `witness` program. A simpler
 way for everyone is on the roadmap.
 
 **What does it cost?**
-The software is free. A witness runs happily on a small cloud server that
+The software is free and open source (AGPL-3.0). A witness runs happily on a small cloud server that
 costs a few euros a month.
 
 **Does it track people?**
@@ -378,4 +379,7 @@ Integration tests run everything over real HTTP on localhost:
 
 ## License
 
-Not yet chosen.
+Witness is free software under the [GNU Affero General Public License
+v3.0](LICENSE). You may use, study, change and share it. If you run a
+modified version as a service for others, you must offer them its source
+code under the same license.

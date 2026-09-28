@@ -6,6 +6,7 @@ edition = "2024"
 # tlsn requires a recent toolchain.
 rust-version = "1.95"
 publish = false
+license = "AGPL-3.0-only"
 
 # A separate workspace: tlsn pulls in a large MPC stack from git, which the
 # main workspace should not have to fetch or build.
