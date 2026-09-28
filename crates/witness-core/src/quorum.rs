@@ -83,6 +83,18 @@ pub fn evaluate(
     asn_of: impl Fn(&Attestation) -> Option<u32>,
     policy: &QuorumPolicy,
 ) -> Evaluation {
+    evaluate_ending_in(url, attestations, asn_of, policy, i64::MIN..i64::MAX)
+}
+
+/// Like [`evaluate`], but only compares windows that end in `ends`: the
+/// round of one stretch of time, such as the slot a recheck was drawn for.
+pub fn evaluate_ending_in(
+    url: &str,
+    attestations: &[SignedAttestation],
+    asn_of: impl Fn(&Attestation) -> Option<u32>,
+    policy: &QuorumPolicy,
+    ends: std::ops::Range<i64>,
+) -> Evaluation {
     let mut rejected = 0;
     let valid: Vec<&Attestation> = attestations
         .iter()
@@ -134,7 +146,7 @@ pub fn evaluate(
                 left += 1;
             }
             let score = (asns.len(), keys.len(), end);
-            if best.is_none_or(|b| score >= b) {
+            if ends.contains(&end) && best.is_none_or(|b| score >= b) {
                 best = Some(score);
             }
         }
@@ -458,6 +470,31 @@ mod tests {
             Verdict::Agreed { group, .. } => assert_eq!(group.hash, Digest::of(b"page")),
             other => panic!("expected the honest class to be compared, got {other:?}"),
         }
+    }
+
+    /// Two rounds ten minutes apart: the latest is compared, unless the
+    /// windows are limited to the earlier round's stretch of time.
+    #[test]
+    fn a_round_can_be_picked_by_when_it_ended() {
+        let k = keys(3);
+        let mut v: Vec<_> = (0..3)
+            .map(|i| att(&k[i], i as u32 + 1, b"before", 1_000_000 + i as i64))
+            .collect();
+        v.extend((0..3).map(|i| att(&k[i], i as u32 + 1, b"after", 1_600_000 + i as i64)));
+        let p = QuorumPolicy::default();
+        let group = |e: Evaluation| match e.verdict {
+            Verdict::Agreed { group, .. } => group.hash,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            group(evaluate(URL, &v, self_reported_asn, &p)),
+            Digest::of(b"after")
+        );
+        let early = evaluate_ending_in(URL, &v, self_reported_asn, &p, 900_000..1_200_000);
+        assert_eq!(early.window_end_ms, Some(1_000_002));
+        assert_eq!(group(early), Digest::of(b"before"));
+        let none = evaluate_ending_in(URL, &v, self_reported_asn, &p, 0..900_000);
+        assert!(none.groups.is_empty() && none.window_end_ms.is_none());
     }
 
     fn rc(country: &str, asn: u32, what: &[u8]) -> RecheckResult {

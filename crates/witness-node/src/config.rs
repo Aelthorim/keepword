@@ -74,7 +74,9 @@ pub struct NetworkConfig {
     /// Serve raw blobs to peers, for these hosts only (and their subdomains).
     pub serve_content_hosts: Vec<String>,
     /// Use the last X-Forwarded-For address, the one your proxy added, as
-    /// the client IP (only behind a reverse proxy you control).
+    /// the client IP (only behind a reverse proxy you control). Only taken
+    /// from connections from this machine or a private network, where
+    /// such a proxy sits.
     pub trust_forwarded_for: bool,
     /// Let peers and network services (drand, calendars, Esplora) be on
     /// private addresses. Peer endpoints come from untrusted descriptors, so
@@ -177,8 +179,8 @@ pub struct QuorumConfig {
     pub split_rounds: usize,
     /// Most rechecks this node captures per hour.
     pub max_rechecks_per_hour: u64,
-    /// Versions from a network prefix whose claims failed rechecks this
-    /// often in a week no longer trigger new rechecks from this node.
+    /// Witnesses connecting from a network prefix (/24, /48) whose claims
+    /// failed rechecks this often in a week are left out of verdicts.
     pub max_failed_claims: u64,
 }
 

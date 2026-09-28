@@ -3,6 +3,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -13,6 +14,12 @@ use witness_core::net::{AlertKind, Gossip};
 use witness_core::quorum::Verdict;
 use witness_node::Node;
 use witness_node::config::Config;
+
+/// Set once the publisher has edited "/edited" pages.
+static EDITED: AtomicBool = AtomicBool::new(false);
+/// Set once the publisher has edited the German version of "/split-edited"
+/// pages; the French version stays the same.
+static SPLIT_EDITED: AtomicBool = AtomicBool::new(false);
 
 /// Serves pages; clients whose User-Agent contains "cloaked" get a
 /// different version.
@@ -36,9 +43,15 @@ async fn content_server() -> String {
                 // (user agents with "-fr"), "/lie" pages for "liar".
                 let cloaked = req.contains("user-agent: cloaked")
                     || (req.starts_with("get /regional") && req.contains("-fr"))
+                    || (req.starts_with("get /split-edited") && req.contains("-fr"))
                     || (req.starts_with("get /lie") && req.contains("user-agent: liar"));
+                let edited = (req.starts_with("get /edited") && EDITED.load(Ordering::SeqCst))
+                    || (req.starts_with("get /split-edited")
+                        && SPLIT_EDITED.load(Ordering::SeqCst));
                 let text = if cloaked {
                     "Prices start at 99 euros."
+                } else if edited {
+                    "Prices start at 59 euros."
                 } else {
                     "Prices start at 49 euros."
                 };
@@ -175,7 +188,8 @@ async fn four_witnesses() {
         Some(witness_core::bundle::Strength::Cosigned)
     );
 
-    // Pushes produced observation receipts, and they flooded.
+    // Pushes produced observation receipts: every node keeps its own of B,
+    // and B keeps the ones about it. They no longer flood.
     let b_key = nodes[1].node.key.public();
     for n in &nodes {
         let obs = n.node.store.observations_of(&b_key, 0).unwrap();
@@ -589,5 +603,274 @@ async fn rechecks_settle_disputes() {
     assert!(
         nodes.iter().all(split_alert),
         "a repeated, confirmed split raises an alert everywhere"
+    );
+}
+
+/// Pages change. A witness that captured a page just before its publisher
+/// edited it saw a real version, and rechecks made after the edit can't
+/// reproduce it. Neither that, nor a recheck draw of an earlier round
+/// judged against a later one, may count against honest witnesses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edits_are_not_failed_claims() {
+    let site = content_server().await;
+    let tweak = |c: &mut Config| {
+        c.network.replication = 3;
+        c.network.max_per_country = 2;
+        c.quorum.window_secs = 2;
+        c.quorum.recheck_secs = 120;
+        c.quorum.recheck_size = 3;
+        c.quorum.recheck_quorum = 2;
+    };
+    let first = spawn_with(64800, "DE", "w-de-0", vec![], tweak).await;
+    let boot = vec![first.endpoint.clone()];
+    let mut nodes = vec![first];
+    for i in 1..12u32 {
+        let (country, ua) = if i < 6 {
+            ("DE", format!("w-de-{i}"))
+        } else {
+            ("FR", format!("w-fr-{i}"))
+        };
+        nodes.push(spawn_with(64800 + i, country, &ua, boot.clone(), tweak).await);
+    }
+    sync_all(&nodes, 3).await;
+    let now = witness_core::now_ms();
+    let (seed, _) = nodes[1]
+        .node
+        .epoch_seed_cached(witness_core::beacon::epoch_of(now))
+        .unwrap();
+    let assigned = |url: &str| -> Vec<usize> {
+        let u = witness_core::target::canonical_url(url).unwrap();
+        let keys: Vec<_> = nodes[1]
+            .node
+            .assigned(&seed, &u, now)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+        (0..nodes.len())
+            .filter(|i| keys.contains(&nodes[*i].node.key.public()))
+            .collect()
+    };
+    let refresh = |url: String| {
+        let nodes = &nodes;
+        async move {
+            for n in nodes {
+                n.node.refresh_url(&url).await.unwrap();
+            }
+        }
+    };
+    let charged = || {
+        nodes
+            .iter()
+            .map(|n| n.node.store.failed_claims("127.0.0.0/24", 0).unwrap())
+            .max()
+            .unwrap()
+    };
+
+    // An edit in the middle of a round: the first witness captured the old
+    // version, the others the new one, and so do the rechecks.
+    let url = format!("{site}/edited/offer");
+    let who = assigned(&url);
+    for i in &who {
+        nodes[*i].node.capture(&url, false).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    nodes[who[0]].node.capture(&url, false).await.unwrap();
+    EDITED.store(true, Ordering::SeqCst);
+    for i in &who[1..] {
+        nodes[*i].node.capture(&url, false).await.unwrap();
+    }
+    refresh(url.clone()).await;
+    sync_all(&nodes, 2).await;
+    refresh(url.clone()).await;
+    sync_all(&nodes, 1).await;
+    let v = nodes[1].node.verdict(&url).unwrap();
+    assert!(v.rechecks >= 2, "rechecks counted: {}", v.rechecks);
+    assert!(
+        matches!(v.evaluation.verdict, Verdict::Agreed { .. }),
+        "the edited version is confirmed: {:?}",
+        v.evaluation.verdict
+    );
+    assert_eq!(
+        nodes[1].node.store.round_outcomes(&url, 4).unwrap(),
+        vec!["agreed".to_string()],
+        "the draw was settled"
+    );
+    assert_eq!(
+        charged(),
+        0,
+        "an honest capture from before the edit was charged"
+    );
+
+    // A regional difference whose German version is then edited. The
+    // draw of the first round must be judged by the versions of that
+    // round, not by the next round's.
+    let url = (0..500)
+        .map(|i| format!("{site}/split-edited/{i}"))
+        .find(|u| {
+            let w = assigned(u);
+            w.iter().any(|i| *i < 6) && w.iter().any(|i| *i >= 6)
+        })
+        .expect("a URL assigned in both countries");
+    let before = charged();
+    let who = assigned(&url);
+    for i in &who {
+        nodes[*i].node.capture(&url, false).await.unwrap();
+    }
+    refresh(url.clone()).await;
+    // The disagreement is noticed and the rechecks are made, but not yet
+    // fetched by anyone.
+    sync_all(&nodes, 2).await;
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    SPLIT_EDITED.store(true, Ordering::SeqCst);
+    for i in &who {
+        nodes[*i].node.capture(&url, false).await.unwrap();
+    }
+    refresh(url.clone()).await;
+    sync_all(&nodes, 1).await;
+    assert_eq!(
+        charged(),
+        before,
+        "witnesses charged for the current version by the draw of an earlier round"
+    );
+    // The first round's draw was settled everywhere, by that round's
+    // versions and the captures made for it: it reproduced both. (A
+    // witness drawn for both rounds captured the edited page for the
+    // second; that capture must not count for the first.)
+    for n in &nodes {
+        assert!(
+            n.node
+                .store
+                .round_outcomes(&url, 4)
+                .unwrap()
+                .contains(&"split".to_string()),
+            "the first round's draw was judged by its own versions and captures"
+        );
+    }
+}
+
+/// Rechecks cost the drawn witnesses a capture each. A witness assigned to
+/// a URL (any key can find URLs it is assigned to) must not be able to make
+/// them capture a round nobody disputed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rechecks_need_a_real_dispute() {
+    let site = content_server().await;
+    let tweak = |c: &mut Config| {
+        c.network.replication = 3;
+        c.network.max_per_country = 2;
+        c.quorum.window_secs = 2;
+        c.quorum.recheck_secs = 120;
+        c.quorum.recheck_size = 3;
+        c.quorum.recheck_quorum = 2;
+    };
+    // Eight witnesses in Germany: at most two are assigned per epoch, so
+    // several are left to draw rechecks from.
+    let first = spawn_with(64700, "DE", "w-de-0", vec![], tweak).await;
+    let boot = vec![first.endpoint.clone()];
+    let mut nodes = vec![first];
+    for i in 1..8u32 {
+        nodes.push(spawn_with(64700 + i, "DE", &format!("w-de-{i}"), boot.clone(), tweak).await);
+    }
+    sync_all(&nodes, 3).await;
+    let now = witness_core::now_ms();
+    let (seed, _) = nodes[1]
+        .node
+        .epoch_seed_cached(witness_core::beacon::epoch_of(now))
+        .unwrap();
+    let requester = &nodes[0].node;
+    // A URL nobody requested and nobody captured, assigned to the requester.
+    let url = (0..500)
+        .map(|i| format!("{site}/quiet/{i}"))
+        .find(|u| {
+            let u = witness_core::target::canonical_url(u).unwrap();
+            requester
+                .assigned(&seed, &u, now)
+                .unwrap()
+                .iter()
+                .any(|c| c.key == requester.key.public())
+        })
+        .expect("a URL assigned to the requester");
+    let r = witness_core::statement::Signed::sign(
+        witness_core::net::RecheckRequest {
+            url: url.clone(),
+            window_end_ms: now,
+            countries: vec!["DE".into()],
+            requester: requester.key.public(),
+            issued_at_ms: now,
+        },
+        &requester.key,
+    )
+    .unwrap();
+    assert!(requester.ingest(Gossip::Recheck(r)).unwrap());
+    sync_all(&nodes, 3).await;
+    let captured = nodes
+        .iter()
+        .filter(|n| !n.node.store.history(&url).unwrap().is_empty())
+        .count();
+    assert_eq!(captured, 0, "witnesses rechecked a round nobody disputed");
+}
+
+/// A log that forked into a bigger history can sign any number of honest
+/// heads of the history both forks share. Gossiping those first must not
+/// keep its auditors from reaching the head of the other fork.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forks_are_found_behind_a_flood_of_old_heads() {
+    let site = content_server().await;
+    let a = spawn(64501, "DE", "witness-a", vec![]).await;
+    let d = spawn(64504, "US", "witness-d", vec![a.endpoint.clone()]).await;
+    let nodes = [a, d];
+    sync_all(&nodes, 2).await;
+    for i in 0..12 {
+        nodes[1]
+            .node
+            .capture(&format!("{site}/page/{i}"), false)
+            .await
+            .unwrap();
+    }
+    // A audits D and verifies its head of size 12.
+    sync_all(&nodes, 1).await;
+    let d_node = &nodes[1].node;
+    let d_key = d_node.key.public();
+    let real = d_node.store.latest_tree_head().unwrap().unwrap();
+    assert_eq!(real.head.size, 12);
+    // Heads of the shared history, each consistent with everything.
+    for size in 1..=10u64 {
+        let root = d_node
+            .store
+            .with_merkle(|m| m.root(size as usize))
+            .unwrap()
+            .unwrap();
+        let h = TreeHead {
+            size,
+            root,
+            ..real.head.clone()
+        }
+        .sign(&d_node.key)
+        .unwrap();
+        assert!(nodes[0].node.ingest(Gossip::TreeHead(h)).unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    // Then the head another group of auditors saw.
+    let other = TreeHead {
+        size: real.head.size + 1000,
+        root: witness_core::Digest::of(b"another history"),
+        ..real.head.clone()
+    }
+    .sign(&d_node.key)
+    .unwrap();
+    assert!(nodes[0].node.ingest(Gossip::TreeHead(other)).unwrap());
+    let r = nodes[0].node.sync().await.unwrap();
+    assert!(
+        r.errors.iter().any(|(_, e)| e.contains("not consistent")),
+        "fork not found in the first audit after it arrived: {:?}",
+        r.errors
+    );
+    assert!(
+        nodes[0]
+            .node
+            .store
+            .equivocating_logs()
+            .unwrap()
+            .contains(&d_key)
     );
 }

@@ -216,20 +216,42 @@ impl Node {
         let mut n = 0;
         let requests = self.store.requests_active(now)?;
         for (url, slot) in self.store.recheck_jobs_pending(budget as u32)? {
-            // Too late to count: skip it.
-            if now_ms() <= self.recheck_deadline(slot) {
-                // Capture the way the assigned witnesses do, so the results
-                // are comparable.
-                let render = self.config.network.render_requests
-                    && requests.iter().any(|r| r.body.url == url && r.body.render);
-                if let Err(e) = self.capture(&url, render).await {
-                    eprintln!("recheck of {url} failed: {e:#}");
-                } else {
-                    n += 1;
-                }
+            // Too late to count, or nothing to settle: skip it, without
+            // spending the budget on it.
+            if now_ms() > self.recheck_deadline(slot) || !self.round_disputed(&url, slot).await? {
+                self.store.recheck_job_drop(&url, slot)?;
+                continue;
+            }
+            // Capture the way the assigned witnesses do, so the results
+            // are comparable.
+            let render = self.config.network.render_requests
+                && requests.iter().any(|r| r.body.url == url && r.body.render);
+            if let Err(e) = self.capture(&url, render).await {
+                eprintln!("recheck of {url} failed: {e:#}");
+            } else {
+                n += 1;
             }
             self.store.recheck_job_done(&url, slot, now_ms())?;
         }
         Ok(n)
+    }
+
+    /// Whether the witnesses assigned to `url` disagree in the round of the
+    /// slot starting at `slot`, as far as this node sees after asking them
+    /// for their attestations. Recheck requests are free, and any key is
+    /// assigned to some URLs (it only has to try enough of them), so a
+    /// capture is only spent on a disagreement this node can see itself.
+    pub(crate) async fn round_disputed(&self, url: &str, slot: i64) -> Result<bool> {
+        let now = now_ms();
+        let parsed = target::canonical_url(url)?;
+        let cands = self.candidates_snapshot(now)?;
+        let assigned = self
+            .assigned_near(&parsed, slot, &cands)
+            .unwrap_or_default();
+        // A peer that doesn't answer just leaves its attestations out.
+        let _ = self
+            .fetch_attestations(&parsed, assigned, slot - self.window_ms())
+            .await;
+        Ok(self.rounds(url, now)?.round_at(slot).0.len() >= 2)
     }
 }

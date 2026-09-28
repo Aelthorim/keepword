@@ -298,7 +298,9 @@ uses plain HTTPS between nodes instead:
 - **NAT is handled by push *and* pull.** Every exchange is started by the
   syncing node: it pulls a peer's outbox and pushes its own. A node without
   a public endpoint still sends and receives everything; it just can't be
-  audited or asked for its attestations.
+  audited or asked for its attestations, and, since nobody pushes to it,
+  it can't place other witnesses in networks (§6.3), so it can't compute
+  verdicts itself.
 - **Smaller attack surface and dependency tree.** libp2p remains an option
   as a second transport. All messages are transport-agnostic signed
   statements.
@@ -322,6 +324,9 @@ minute) a node:
 1. exchanges gossip with a **random sample** of peers
    (`network.gossip_fanout`, 16): refreshes each one's descriptor, pulls
    its outbox, pushes its own and gets an observation receipt (§6.3).
+   Three quarters of the sample are peers that synced within a day, the
+   rest others, to find new peers and notice ones that are back, so keys
+   announcing endpoints nobody answers on can't crowd the working ones out.
    Messages still reach every node, over a few hops. The full peer list is
    only fetched while a node knows few peers, and daily from its bootstrap
    peers;
@@ -356,7 +361,10 @@ audits about 16 logs, whatever the network's size. Once per
    One that serves a proof that fails, refuses one (HTTP 4xx), or can't
    serve one for a day is treated like an equivocating log by this node.
    Unlike a same-size fork, this isn't a proof others can check offline,
-   so every auditor establishes it for itself.
+   so every auditor establishes it for itself. The biggest heads are
+   checked first: a forked log can sign any number of honest heads of the
+   history its forks share, and checking oldest first would let those
+   crowd out the heads that expose it.
 
 This is how Certificate Transparency's witnesses work. The earlier design
 mirrored every peer's log and attestations and gossiped every
@@ -364,8 +372,9 @@ cosignature, which cost each node nodes² × rounds of storage: a few
 hundred MB a day at 20 witnesses, over a terabyte at 1000.
 
 Gossip messages (descriptors, watch requests and cancellations, tree heads,
-cosignatures, observations, alerts, equivocation proofs, drand beacons,
-TLSNotary receipts) are all signed statements with content-derived IDs.
+alerts, equivocation proofs, drand beacons, TLSNotary receipts) are all
+signed statements with content-derived IDs. (Cosignatures go to the log they
+cover, and observation receipts to the node they are about; neither floods.)
 They are deduplicated by ID, validated (signature, clock skew, rate
 limits), stored and forwarded. Message kinds a node doesn't know are
 skipped, not fatal, so nodes can be upgraded one at a time.
@@ -376,12 +385,24 @@ Keys cost nothing, so a node limits what strangers can make it store:
   message must be signed by a witness in the peer table (or by the node
   itself). The table is capped (`network.max_peers`), so flooding alerts,
   requests or receipts first means getting into it.
+- **Every key may only make a node take so much.** Getting into the peer
+  table is free, so a node takes at most an hour's worth of each kind of
+  message from one key: 10 descriptors or equivocation proofs, 60 tree
+  heads, 100 requests or cancellations, 200 of anything else, well above
+  what an honest witness sends. Keys the node has never synced with nor
+  seen push to it share 2000 messages an hour between them, except the
+  peer lists of its bootstrap peers. These checks come before any
+  signature is checked. Alerts dated ahead, which would never be pruned,
+  are refused.
 - **A full peer table evicts the least useful peer** to admit a new one
   with an endpoint: an equivocating log first, then peers without an
   endpoint, then peers that never synced within an hour of being learned
   or haven't synced for a day. Healthy peers are never evicted. Descriptors older than seven days are ignored.
 - **Beacons older than three days are refused.** Every historical drand
-  beacon verifies, and there are millions.
+  beacon verifies, and there are millions. Checking one is a BLS pairing,
+  milliseconds of CPU, and anyone may send them, so a node only checks a
+  beacon it can use (newer than any it holds, or a day's epoch seed it
+  lacks), at most 20 at once and one every three seconds after that.
 - Peers are synced eight at a time, and a peer whose last sync failed is
   retried after ten minutes, so dead peers can't stall a round.
 
@@ -394,28 +415,33 @@ unless `network.allow_private_peers` is set for a closed LAN network.
 Self-reported ASN is worthless on its own. Pushes carry a signed envelope
 (`from`, `to`, time, hash of the message IDs), protected against replay.
 The receiver answers with an **observation receipt**: "I saw key K connect
-from IP X at time T", which floods like any gossip. A verifier maps each IP
+from IP X at time T", which K keeps. Receipts don't flood: a node only uses
+its own receipts and the ones about itself (below). A verifier maps each IP
 to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
 `quorum.asn_db`).
 
 Keys are free, so a verifier never counts observers as such. One server
 with twenty keys could otherwise sign receipts vouching that each of its
 keys sits in a different network, and verdicts would count twenty
-independent witnesses. Instead a verifier decides where K is like this:
+independent witnesses. Counting observers once per network isn't enough
+either: two servers on two real networks could sign receipts placing any
+number of keys that never connect to the verifier in any networks they
+like, each one counted. So a verifier decides where K is like this:
 
-1. **What it saw itself wins.** If K has pushed to the verifier, the
-   address the verifier saw settles K's location. No number of other
-   receipts outvotes it.
-2. **Otherwise, receipts count per observer network.** A receipt only
-   counts if the verifier has itself seen its observer connect, and all
-   observers in one network count once. A location needs
-   `min_observers` (2) independent observer networks to agree on it.
-   Twenty keys on one server are one observer network, so they can't
-   vouch each other into anything.
+1. **Another witness is where the verifier saw it connect.** If K has
+   pushed to the verifier, the address the verifier saw is K's location.
+   Receipts from other observers never place K.
+2. **The verifier itself is where its peers saw it.** Receipts about the
+   verifier count once per network their observers connect from, as the
+   verifier saw those observers itself, and `min_observers` (2) networks
+   must agree. Twenty keys on one server are one observer network.
 
-With peer sampling every witness pushes to every other within about a day,
-so in practice rule 1 decides almost every location, and all honest nodes
-see the same one. An observer issues a new receipt for the same witness at
+With peer sampling every witness pushes to every other within about a day
+(sooner in small networks), so a new witness counts at every node within
+about a day, and all honest nodes see the same location. A node without a
+public endpoint receives no pushes, so it can't place other witnesses and
+its own verdicts stay insufficient; it still captures, requests and
+relays. An observer issues a new receipt for the same witness at
 the same address at most weekly, and hands back the existing one
 otherwise, so receipts don't grow with sync rounds. Without an ASN table
 nothing is corroborated. `quorum.trust_self_reported` exists for test networks
@@ -446,9 +472,11 @@ witness per ASN and `max_per_country` per country, `replication` in total.
 The **epoch seed** is the drand quicknet beacon at the start of the UTC day,
 verified offline with BLS. Beacons also travel over gossip, so nodes
 without drand access can still use them. Only assigned witnesses add the
-URL to their watchlist; the watch disappears when the request expires or
-the assignment moves. Several requests for one URL share one watch at the
-shortest interval any of them asks for.
+URL to their watchlist, at their next sync; the watch disappears when the
+request expires or the assignment moves. Several requests for one URL share
+one watch at the shortest interval any of them asks for. Without an
+epoch's beacon nobody can tell who was assigned in it, so a verdict counts
+no attestation from that epoch rather than every one.
 
 A requester can withdraw a request with a signed **cancellation**
 (`witness request URL --cancel`). Nodes drop the request and remember the
@@ -503,11 +531,20 @@ witnesses located there, one per network and none assigned to the URL:
 the draw is keyed by the epoch's drand seed, the URL and a fixed slot of
 time (the comparison window), so every node computes the same recheckers,
 and neither the requester nor anyone else can retry until a draw suits
-them. The drawn witnesses capture the page again (at most
-`quorum.max_rechecks_per_hour` each). A version is **confirmed** if, in a
+them. A drawn witness first fetches the assigned witnesses' attestations
+and only captures the page again if it sees their round disputed itself
+(at most `quorum.max_rechecks_per_hour` captures each): any key is assigned
+to some URLs, since it only has to try enough of them, so a request alone
+must not be able to spend other witnesses' captures. A version is
+**confirmed** if, in a
 country it was reported from, at least `quorum.recheck_quorum` (3) of the
 rechecking networks saw it and they are at least three quarters of the
-networks that rechecked there. Then:
+networks that rechecked there. Each draw is judged by the versions of the
+round it was drawn for, the one ending in its slot, even if a later round
+is current by the time it completes, and by each drawn witness's first
+capture after that round: a witness drawn again for a later slot captures
+again, maybe after the page changed, and that capture must not stand in for
+the earlier one. Then:
 
 - two or more versions confirmed: **Split**. Independent networks really
   are served different content. A split is an observation, not an
@@ -519,7 +556,13 @@ networks that rechecked there. Then:
   well enough to have reproduced their version and didn't, a **failed
   claim** is recorded against the network prefix (/24, /48) this node saw
   each dissenter connect from. Networks with `quorum.max_failed_claims` (5)
-  in a week are left out of verdicts: keys are free, addresses aren't;
+  in a week are left out of verdicts: keys are free, addresses aren't.
+  Pages change, though, and a witness that captured a page a minute before
+  its publisher edited it saw a real version. So a version other networks
+  saw too, captured before any other network had seen the confirmed one,
+  is the page before an edit and costs nothing. A made-up version was
+  never served to anyone else; replaying an old one passes only in the
+  round right after a real change;
 - none confirmed: **Disputed**, and while rechecks may still arrive,
   Disputed (pending). A dissent from `min_dissent_asns` networks whose
   countries had too few witnesses to recheck also leaves the round
@@ -663,7 +706,31 @@ before public operation. The design aims to leave room for compliance.
   shouldn't ship evasion tooling beyond that.
 - **Windowing for split verdicts.** Ten minutes is a guess. Fast-moving
   pages (live blogs) need either a shorter window or site rules that
-  exclude the live section.
+  exclude the live section. Since 1.1.0 they also cost a recheck draw
+  every round: the assigned witnesses rarely capture the same version. A
+  round whose versions are cleanly ordered in time (every capture of one
+  before every capture of the other) looks like an edit, not a
+  disagreement, and could skip rechecks.
+- **Pages that aren't the same for everyone in a country.** Failed claims
+  assume rechecks in a country can reproduce what an honest witness there
+  saw. A/B tests with a small variant, and bot walls that challenge some
+  addresses but not others, break that: the witness that drew the variant
+  or the challenge is charged like a liar. Edits are exempt (§6.5), but
+  these aren't yet. Charging only versions no other network has seen
+  within the lookback would exempt them, at the price of letting two
+  colluding networks dispute forever; a per-URL backoff for rechecks would
+  bound that.
+- **Many keys behind one server.** The per-key caps (§6.2) bound what one
+  key can make a node store, and keys with nothing behind them share one
+  budget. Keys whose endpoints all answer from one server still get a cap
+  each, and count as working peers when gossip picks whom to talk to.
+  Capping peers per network prefix of their endpoint (as failed claims are
+  counted per /24 and /48) would make each such key cost an address.
+- **Nodes without a public endpoint.** Nobody pushes to them, so they
+  can't place other witnesses (§6.3) or compute verdicts. Recording where
+  a node reached each peer's endpoint would give every node a first-hand
+  location for every candidate, at the same cost per fake network as a
+  push (one real address in that network).
 - **Who can request watches.** Today it is any witness in the peer table,
   capped at 50 active requests each, with intervals ≥ 10 min, and each node
   captures at most `max_request_watches` URLs. Running many witnesses is

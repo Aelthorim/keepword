@@ -4,6 +4,88 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
+## [1.1.1] - 2026-09-28
+
+Security, correctness and stability fixes: location corroboration,
+rechecks and fork checks, and what one hostile client or key can make a
+witness do. Nothing changes in the protocol or the stored data; upgrading
+is recommended for every witness before a network goes public.
+
+### Fixed
+
+- **Two servers could place any number of keys in any networks.**
+  Receipts counted once per observer network, but two observers on two
+  real networks could sign receipts putting keys that never connected to
+  a node in as many networks as they liked, and assignment, verdicts and
+  recheck draws counted each. A node now places another witness only
+  where it saw that witness connect itself; receipts only tell a node
+  where it is itself. New witnesses count at every node once they have
+  pushed to it, within about a day.
+- **Anyone could spend other witnesses' recheck captures.** A recheck
+  request only had to come from a key assigned to the URL, and any key is
+  assigned to some URLs (it only has to try enough of them). Drawn
+  witnesses now fetch the assigned witnesses' attestations first and only
+  capture when they see the round disputed themselves; skipped requests
+  don't use up `quorum.max_rechecks_per_hour`.
+- **Honest witnesses were charged for page edits.** A witness that
+  captured a page just before its publisher edited it failed the rechecks
+  made after the edit, and five of those in a week left its network out
+  of verdicts. A version other networks saw too, captured before any other
+  network saw the version the rechecks confirmed, now costs nothing.
+- **Recheck draws were judged by the wrong round.** A draw that completed
+  after a newer round had started was settled against the newer round's
+  versions, so witnesses could be charged for reporting the current page.
+  Each draw is now judged by the versions of the round it was drawn for,
+  and settled even when that round is no longer the current one; only
+  draws of rounds with the same versions add up in a verdict.
+- **A forked log could hide behind its own old heads.** Auditors checked
+  gossiped heads oldest first, eight per audit, so a log could sign heads
+  of the history its forks share (all consistent) and gossip them ahead of
+  the ones that exposed it. The biggest heads are now checked first.
+- **Anyone could keep a witness's CPU busy with fake drand beacons.**
+  Beacons are accepted from anyone and each check is a BLS pairing
+  (about 2.5 ms): one push of 1000 garbage beacons cost 2.5 s of CPU, and
+  600 pushes a minute from one address kept about 26 cores busy. A node
+  now only checks beacons it can use, at most 20 at once and one every
+  three seconds after that, before any signature is checked.
+- **One key could fill every node's disk.** Any key gets into the peer
+  table with a descriptor and could then push unlimited alerts, tree heads
+  or receipts, which every node stored and forwarded. A node now takes an
+  hour's worth of each kind from one key at most (10 to 200 messages), and
+  2000 an hour in all from keys it has never synced with nor seen push to
+  it. Alerts dated ahead, which were never pruned, are refused.
+- **Dead peers could crowd working ones out of gossip.** Each round synced
+  a random sample of peers, so keys announcing endpoints nobody answers on
+  could fill it. Three quarters of each round now go to peers that synced
+  within a day.
+- **A watch request could be made never to expire.** Its duration was
+  checked by subtracting two times that wrap around in release builds; a
+  request from 146 million years ago that expires as long from now passed.
+- **Rechecks counted captures made for later draws.** Successive draws of
+  a URL overlap, and a witness drawn for two of them had its later
+  capture, of a page maybe edited since, count for both. Each draw now
+  counts each witness's first capture after the round it rechecks.
+- **Work that grew with the square of the network.** Locating the peers
+  checked every stored receipt about each one (450 ms per lookup at 200
+  peers, and it ran per followed URL); every incoming watch request
+  recomputed every request's assignment; followed URLs re-downloaded a week
+  of attestations from every assigned witness every ten minutes; and
+  receipts flooded, one per pair of witnesses. Now: one receipt per peer,
+  assignments once per sync, only new attestations after the first fetch,
+  and receipts go only to the witness they are about.
+- **A failing step stopped the rest of a sync round**, pruning included,
+  and one URL that couldn't be evaluated stopped the review of all others.
+- **Verdicts counted every key in an epoch whose beacon was missing.**
+  Without the beacon nobody can tell who was assigned, so no attestation
+  from that epoch counts now.
+- **Verdicts dropped captures of witnesses whose clock is a little
+  behind.** They allowed no skew between a capture and its drand beacon,
+  while bundles allow a minute; both allow a minute now.
+- **X-Forwarded-For was taken from any client** with
+  `network.trust_forwarded_for` on, say through a published container
+  port, and where a peer connects from now decides where it is. The header
+  is only taken from connections from this machine or a private network.
+
 ## [1.1.0] - 2026-09-28
 
 Disagreements are now settled by reproduction instead of by vote. Upgrade
@@ -143,6 +225,7 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[1.1.1]: https://github.com/Aelthorim/witness/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
 [1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0
