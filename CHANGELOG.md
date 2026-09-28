@@ -4,6 +4,23 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
+## [Unreleased]
+
+Security and correctness fixes for 1.1.0's location corroboration,
+rechecks and fork checks. Nothing changes in the protocol or the stored
+data; upgrading is recommended for every witness.
+
+### Fixed
+
+- **Two servers could place any number of keys in any networks.**
+  Receipts counted once per observer network, but two observers on two
+  real networks could sign receipts putting keys that never connected to
+  a node in as many networks as they liked, and assignment, verdicts and
+  recheck draws counted each. A node now places another witness only
+  where it saw that witness connect itself; receipts only tell a node
+  where it is itself. New witnesses count at every node once they have
+  pushed to it, within about a day.
+
 ## [1.1.0] - 2026-09-28
 
 Disagreements are now settled by reproduction instead of by vote. Upgrade
@@ -143,6 +160,7 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[Unreleased]: https://github.com/Aelthorim/witness/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
 [1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
 [1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0

@@ -298,7 +298,9 @@ uses plain HTTPS between nodes instead:
 - **NAT is handled by push *and* pull.** Every exchange is started by the
   syncing node: it pulls a peer's outbox and pushes its own. A node without
   a public endpoint still sends and receives everything; it just can't be
-  audited or asked for its attestations.
+  audited or asked for its attestations, and, since nobody pushes to it,
+  it can't place other witnesses in networks (§6.3), so it can't compute
+  verdicts itself.
 - **Smaller attack surface and dependency tree.** libp2p remains an option
   as a second transport. All messages are transport-agnostic signed
   statements.
@@ -401,21 +403,25 @@ to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
 Keys are free, so a verifier never counts observers as such. One server
 with twenty keys could otherwise sign receipts vouching that each of its
 keys sits in a different network, and verdicts would count twenty
-independent witnesses. Instead a verifier decides where K is like this:
+independent witnesses. Counting observers once per network isn't enough
+either: two servers on two real networks could sign receipts placing any
+number of keys that never connect to the verifier in any networks they
+like, each one counted. So a verifier decides where K is like this:
 
-1. **What it saw itself wins.** If K has pushed to the verifier, the
-   address the verifier saw settles K's location. No number of other
-   receipts outvotes it.
-2. **Otherwise, receipts count per observer network.** A receipt only
-   counts if the verifier has itself seen its observer connect, and all
-   observers in one network count once. A location needs
-   `min_observers` (2) independent observer networks to agree on it.
-   Twenty keys on one server are one observer network, so they can't
-   vouch each other into anything.
+1. **Another witness is where the verifier saw it connect.** If K has
+   pushed to the verifier, the address the verifier saw is K's location.
+   Receipts from other observers never place K.
+2. **The verifier itself is where its peers saw it.** Receipts about the
+   verifier count once per network their observers connect from, as the
+   verifier saw those observers itself, and `min_observers` (2) networks
+   must agree. Twenty keys on one server are one observer network.
 
-With peer sampling every witness pushes to every other within about a day,
-so in practice rule 1 decides almost every location, and all honest nodes
-see the same one. An observer issues a new receipt for the same witness at
+With peer sampling every witness pushes to every other within about a day
+(sooner in small networks), so a new witness counts at every node within
+about a day, and all honest nodes see the same location. A node without a
+public endpoint receives no pushes, so it can't place other witnesses and
+its own verdicts stay insufficient; it still captures, requests and
+relays. An observer issues a new receipt for the same witness at
 the same address at most weekly, and hands back the existing one
 otherwise, so receipts don't grow with sync rounds. Without an ASN table
 nothing is corroborated. `quorum.trust_self_reported` exists for test networks
@@ -664,6 +670,11 @@ before public operation. The design aims to leave room for compliance.
 - **Windowing for split verdicts.** Ten minutes is a guess. Fast-moving
   pages (live blogs) need either a shorter window or site rules that
   exclude the live section.
+- **Nodes without a public endpoint.** Nobody pushes to them, so they
+  can't place other witnesses (§6.3) or compute verdicts. Recording where
+  a node reached each peer's endpoint would give every node a first-hand
+  location for every candidate, at the same cost per fake network as a
+  push (one real address in that network).
 - **Who can request watches.** Today it is any witness in the peer table,
   capped at 50 active requests each, with intervals ≥ 10 min, and each node
   captures at most `max_request_watches` URLs. Running many witnesses is

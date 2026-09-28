@@ -359,8 +359,9 @@ impl Node {
         Ok(())
     }
 
-    /// Where a witness is, as far as this node will trust: corroborated by
-    /// observation receipts, or self-reported if the config allows it.
+    /// Where a witness is, as far as this node will trust: where this node
+    /// saw it connect (for this node itself, where its peers saw it; see
+    /// `vantage::corroborate`), or self-reported if the config allows it.
     pub fn location_of(&self, key: &WitnessKey, now: i64) -> Result<Option<Location>> {
         if let Some(db) = &self.asn_db {
             let me = self.key.public();
