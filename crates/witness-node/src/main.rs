@@ -1018,9 +1018,12 @@ fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
     let peers = node.store.peers()?;
     if cfg.network.endpoint.is_none() && cfg.network.peers.is_empty() && peers.is_empty() {
         w.push(
-            "federation is off: set network.endpoint and network.peers, then restart the service"
+            "federation is off: set network.endpoint (the node then joins through the default \
+             seeds) and restart the service"
                 .to_string(),
         );
+    } else if peers.is_empty() && cfg.network.bootstrap().is_empty() {
+        w.push("no peers to join through: set network.peers to any witness's address".to_string());
     }
     if let Some(ep) = &cfg.network.endpoint {
         if ep.starts_with("http://") && !cfg.network.allow_private_peers {

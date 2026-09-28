@@ -1,0 +1,89 @@
+name: Release
+
+# Push a tag like v1.0.0 to build static Linux binaries and publish a
+# GitHub release with them, their checksums and the changelog entry.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Check the tag matches the crate version
+        run: |
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "witness-node") | .version')
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $version"; exit 1; }
+      - name: Install zig and cargo-zigbuild
+        run: pip install ziglang==0.13.0 cargo-zigbuild
+      - name: Build
+        run: cargo zigbuild --release --locked -p witness-node --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          name=witness-${GITHUB_REF_NAME}-${{ matrix.target }}
+          mkdir -p "dist/$name"
+          cp target/${{ matrix.target }}/release/witness "dist/$name/"
+          cp LICENSE README.md CHANGELOG.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum *.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes from the changelog
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+          cat >> notes.md <<'EOF'
+
+          ### Install
+
+          On a server, the installer builds from source and sets up the service:
+
+          ```sh
+          git clone https://github.com/Aelthorim/witness.git && cd witness
+          sudo sh scripts/install.sh --domain witness.example.org --caddy
+          ```
+
+          The binaries below are static Linux builds of the `witness` command
+          (without headless rendering). Check them against `SHA256SUMS`.
+          EOF
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
+            --title "Witness $GITHUB_REF_NAME" --notes-file notes.md --verify-tag

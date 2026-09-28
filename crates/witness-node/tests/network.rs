@@ -79,6 +79,7 @@ async fn spawn_with(
     cfg.vantage.country = Some(country.into());
     cfg.network.endpoint = Some(endpoint.clone());
     cfg.network.peers = peers;
+    cfg.network.seeds = false;
     // Four witnesses in four countries: every URL is assigned to all of
     // them, so each one's captures reach every verdict.
     cfg.network.replication = 4;

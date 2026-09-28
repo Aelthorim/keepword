@@ -3,6 +3,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Aelthorim/witness/releases/latest"><img src="https://img.shields.io/github/v/release/Aelthorim/witness?label=release&color=ffb020" alt="Latest release"></a>
   <a href="https://github.com/Aelthorim/witness/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/witness/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/written%20in-Rust-dea584" alt="Written in Rust">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
@@ -108,7 +109,7 @@ VERIFIED
   proves what they said without asking anyone to trust one organization.
 - **Not a lie detector.** It proves what a page *said* and *when*, not
   whether it was *true*.
-- **Not finished.** It works end to end today and the network is just
+- **Not finished.** Version 1.0 works end to end, and the network is just
   starting. Using it currently means running a small server and typing a
   few commands; friendlier ways in are on the way.
 
@@ -191,7 +192,10 @@ sudo sh scripts/install.sh --domain witness.example.org --caddy
 This builds Witness, creates a sandboxed `witness` service with its own user,
 fetches the IP-to-ASN table and refreshes it weekly, detects the node's
 network, and puts the peer API behind Caddy with automatic TLS. Re-run it to
-upgrade. There is also a container image (`Dockerfile`,
+upgrade. Prebuilt static Linux binaries of the `witness` command (x86_64 and
+arm64) are attached to each [release](https://github.com/Aelthorim/witness/releases);
+changes are listed in [CHANGELOG.md](CHANGELOG.md). There is also a
+container image (`Dockerfile`,
 `packaging/docker/compose.yaml`). Both are described in
 [docs/INSTALL.md](docs/INSTALL.md). To start a network or join one, see
 [docs/NETWORK.md](docs/NETWORK.md).

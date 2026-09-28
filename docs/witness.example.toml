@@ -28,6 +28,7 @@ retain = "full"
 # Public base URL of this node's /v1 API. Unset = push-only (behind NAT).
 endpoint = "https://witness.example.org"
 peers = ["https://witness.other-example.net"]
+seeds = true               # also join through the built-in seed witnesses
 sync_interval_secs = 60
 replication = 5            # witnesses assigned per watch request
 max_per_country = 2
