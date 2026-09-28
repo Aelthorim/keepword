@@ -9,6 +9,7 @@ pub mod consensus;
 pub mod daemon;
 pub mod federation;
 pub mod httpc;
+pub mod sysdir;
 pub mod vantage;
 pub mod web;
 

@@ -83,10 +83,13 @@ executable (except with `--render`, because Chromium's JIT needs it).
 
 ### Day-to-day
 
-Run CLI commands as the service user so file ownership stays right:
+Run `witness` as root or with sudo. It finds the installed node by itself
+and switches to the `witness` user before touching anything, so file
+ownership stays right. No alias or `WITNESS_DIR` is needed. As an ordinary
+user it tells you to use sudo, since the data directory is private to the
+service.
 
 ```sh
-alias witness='sudo -u witness WITNESS_DIR=/var/lib/witness witness'
 witness watch add https://example.org/terms --every 6h
 witness request https://example.org/terms --every 1h --for 7days   # the network watches it
 witness request https://example.org/terms --cancel

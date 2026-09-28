@@ -14,14 +14,9 @@ use witness_tlsn::{Limits, Notary, VerifierService, capture_with, connect_server
     about = "TLSNotary proof tier for Witness"
 )]
 struct Cli {
-    /// Node data directory (shared with `witness`).
-    #[arg(
-        long,
-        global = true,
-        env = "WITNESS_DIR",
-        default_value = "./witness-data"
-    )]
-    dir: PathBuf,
+    /// Node data directory (shared with `witness`, and found the same way).
+    #[arg(long, global = true, env = "WITNESS_DIR")]
+    dir: Option<PathBuf>,
     /// Largest response to prove, in KiB. MPC cost grows with size.
     #[arg(long, global = true, default_value_t = 256)]
     max_recv_kib: usize,
@@ -51,14 +46,20 @@ enum Cmd {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
+    let dir = witness_node::sysdir::resolve(cli.dir.clone());
+    // Before the runtime starts any threads.
+    witness_node::sysdir::become_owner(&dir)?;
+    tokio::runtime::Runtime::new()?.block_on(run(cli, dir))
+}
+
+async fn run(cli: Cli, dir: PathBuf) -> Result<()> {
     let limits = Limits {
         max_recv: cli.max_recv_kib * 1024,
         ..Limits::default()
     };
-    let node = Arc::new(Node::open(&cli.dir)?);
+    let node = Arc::new(Node::open(&dir)?);
     match cli.cmd {
         Cmd::Serve { addr, open } => {
             let listener = tokio::net::TcpListener::bind(&addr).await?;

@@ -237,7 +237,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
         /etc/init.d/witness /etc/init.d/witness-notary /etc/periodic/weekly/witness-asn-update \
         /etc/cron.weekly/witness-asn-update
     [ "$LIVE_INIT" -eq 0 ] || [ "$INIT" != "systemd" ] || systemctl daemon-reload
-    rm -f "$BIN/witness" "$BIN/witness-tlsn"
+    rm -f "$BIN/witness" "$BIN/witness-tlsn" /etc/witness/data-dir
+    rmdir /etc/witness 2>/dev/null || true
     rm -rf "$LIBEXEC"
     if [ -f /etc/caddy/witness.caddy ]; then
         rm -f /etc/caddy/witness.caddy
@@ -442,6 +443,14 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     info "created system user $SVC_USER"
 fi
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
+# The CLI finds /var/lib/witness by itself; anywhere else is recorded here.
+if [ "$DATA_DIR" = /var/lib/witness ]; then
+    rm -f /etc/witness/data-dir
+    rmdir /etc/witness 2>/dev/null || true
+else
+    install -d /etc/witness
+    printf '%s\n' "$DATA_DIR" >/etc/witness/data-dir
+fi
 
 # Helper for refreshing the IP-to-ASN table, used now and by the timer.
 install -d "$LIBEXEC"
@@ -794,5 +803,5 @@ cat <<EOF
       witness watch add https://example.org/terms --every 6h
       witness config show
     Starting or joining a network: docs/NETWORK.md
-    ${DIM}(run witness commands as the service user: sudo -u $SVC_USER WITNESS_DIR=$DATA_DIR witness …)${RESET}
+    ${DIM}(run witness commands as root or with sudo; they switch to the $SVC_USER user by themselves)${RESET}
 EOF

@@ -17,14 +17,11 @@ use witness_normalize::diff;
     about = "Independent, verifiable records of what web pages said"
 )]
 struct Cli {
-    /// Node data directory.
-    #[arg(
-        long,
-        global = true,
-        env = "WITNESS_DIR",
-        default_value = "./witness-data"
-    )]
-    dir: PathBuf,
+    /// Node data directory. Default: ./witness-data if it exists, else the
+    /// node set up by the installer (/var/lib/witness). Run as root, the
+    /// command switches to the directory's owner, the service user.
+    #[arg(long, global = true, env = "WITNESS_DIR")]
+    dir: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
@@ -271,15 +268,25 @@ fn parse_retain(s: &str) -> Result<Retain, String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Exit quietly when piped into `head` and the like.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
-    match run(cli).await {
+    // `init` creates a node, so it never picks the installed one by itself.
+    let dir = match (&cli.cmd, &cli.dir) {
+        (Cmd::Init { .. }, None) => PathBuf::from(witness_node::sysdir::LOCAL_DIR),
+        _ => witness_node::sysdir::resolve(cli.dir.clone()),
+    };
+    // Before the runtime starts any threads.
+    let result = witness_node::sysdir::become_owner(&dir).and_then(|()| {
+        tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(run(cli, dir)))
+    });
+    match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(e) => {
@@ -299,8 +306,7 @@ fn at_ms(at: &Option<String>) -> Result<Option<i64>> {
 }
 
 /// Returns Ok(false) when a verification failed.
-async fn run(cli: Cli) -> Result<bool> {
-    let dir = cli.dir.clone();
+async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
     match cli.cmd {
         Cmd::Init {
             asn,

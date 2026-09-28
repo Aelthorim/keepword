@@ -112,6 +112,12 @@ VERIFIED
 `--at` takes RFC 3339 or `YYYY-MM-DD` (end of that day, UTC). IDs can be
 abbreviated. `--json` gives machine-readable output.
 
+The node's data directory is `--dir` or `WITNESS_DIR` if given, else
+`./witness-data` if it exists, else the node the installer set up
+(`/var/lib/witness`). Run as root, `witness` switches to the owner of that
+directory, the service user, before doing anything, so `sudo witness …`
+just works on an installed node.
+
 ## Configuration
 
 `witness-data/witness.toml`; see [docs/witness.example.toml](docs/witness.example.toml).

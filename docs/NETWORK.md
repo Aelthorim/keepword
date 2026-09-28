@@ -87,8 +87,7 @@ joins when one of them is down.
 After two or three minutes (a few sync rounds), on any witness:
 
 ```sh
-alias witness='sudo -u witness WITNESS_DIR=/var/lib/witness witness'
-witness net peers
+witness net peers        # as root or with sudo
 witness net status
 ```
 
