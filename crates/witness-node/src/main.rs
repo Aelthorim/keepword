@@ -710,7 +710,10 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                             "{}  {}  log {}  location {}  reputation {:.1}  last sync {}{}",
                             p.key.short(),
                             p.endpoint.as_deref().unwrap_or("(no endpoint)"),
-                            p.head.as_ref().map_or(0, |h| h.head.size),
+                            // Only known for logs this node audits.
+                            p.head
+                                .as_ref()
+                                .map_or("-".to_string(), |h| h.head.size.to_string()),
                             loc.map(|l| l.to_string())
                                 .unwrap_or_else(|| "unknown".into()),
                             scores.get(&p.key).copied().unwrap_or(0.0),
@@ -727,10 +730,10 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                         print_json(&r)?;
                     } else {
                         println!(
-                            "synced {}/{} peers: {} new leaves, {} new attestations, {} messages in, {} out",
+                            "synced {}/{} peers: {} logs audited, {} new attestations, {} messages in, {} out",
                             r.synced,
                             r.peers,
-                            r.new_leaves,
+                            r.audited,
                             r.new_attestations,
                             r.gossip_in,
                             r.gossip_out
@@ -789,8 +792,9 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                         "requests    {} active",
                         node.store.requests_active(now)?.len()
                     );
+                    println!("auditing    {} logs", node.audited_logs_now()?.len());
                     println!(
-                        "mirrored    {} attestations from peers",
+                        "fetched     {} attestations from peers",
                         node.store.foreign_count()?
                     );
                     println!(
@@ -896,6 +900,10 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
         Cmd::Verdict { url } => {
             let node = Node::open(&dir)?;
             let url = target::canonical_url(&url)?;
+            // Ask the witnesses assigned to it for their latest captures.
+            if let Err(e) = node.refresh_url(url.as_str()).await {
+                eprintln!("warning: could not fetch from peers: {e:#}");
+            }
             let v = node.verdict(url.as_str())?;
             if cli.json {
                 return print_json(&v).map(|_| true);

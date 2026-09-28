@@ -11,9 +11,9 @@ use witness_core::net::{
     Alert, Cosignature, Descriptor, Gossip, Observation, TlsnReceipt, WatchRequest,
 };
 use witness_core::statement::Signed;
-use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, merkle};
+use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey};
 
-use crate::{Result, Store, StoreError, digest};
+use crate::{Result, Store, StoreError};
 
 pub(crate) const SCHEMA_V2: &str = r#"
 ALTER TABLE watch ADD COLUMN request_id BLOB;
@@ -148,6 +148,54 @@ CREATE TABLE request_cancels (
 
 /// What this node captures for the active requests on one URL: the
 /// shortest interval and the latest expiry among them.
+pub(crate) const SCHEMA_V4: &str = r#"
+-- Logs are no longer mirrored leaf by leaf; auditors check consistency
+-- proofs between checkpoints instead.
+DROP TABLE peer_leaves;
+
+-- Checkpoint heads seen over gossip. Two with the same log and size but
+-- different roots prove the log showed different histories.
+CREATE TABLE log_heads (
+    log         BLOB NOT NULL,
+    size        INTEGER NOT NULL,
+    root        BLOB NOT NULL,
+    json        TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (log, size)
+);
+
+-- When a cosignature was made, for pruning superseded ones.
+ALTER TABLE cosignatures ADD COLUMN at INTEGER;
+"#;
+
+/// How long pruned data is kept.
+pub struct Retention {
+    /// Cosignatures superseded by a newer one from the same cosigner.
+    pub cosignatures_ms: i64,
+    pub observations_ms: i64,
+    pub alerts_ms: i64,
+    pub beacons_ms: i64,
+    /// Attestations fetched from other witnesses.
+    pub foreign_ms: i64,
+    pub reputation_ms: i64,
+    pub log_heads_ms: i64,
+}
+
+impl Default for Retention {
+    fn default() -> Self {
+        const DAY: i64 = 86_400_000;
+        Retention {
+            cosignatures_ms: 2 * DAY,
+            observations_ms: 30 * DAY,
+            alerts_ms: 180 * DAY,
+            beacons_ms: 7 * DAY,
+            foreign_ms: 90 * DAY,
+            reputation_ms: 60 * DAY,
+            log_heads_ms: 7 * DAY,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestWatch {
     pub url: String,
@@ -282,9 +330,8 @@ impl Store {
 
     /// Make room in a full peer table by dropping the least useful peer:
     /// one that equivocated, has no endpoint, or hasn't synced in a day
-    /// (or ever, an hour after we learned of it). Its mirrored log is kept,
-    /// so it is re-checked for consistency if it comes back. Returns
-    /// whether a peer was dropped.
+    /// (or ever, an hour after we learned of it). Returns whether a peer
+    /// was dropped.
     pub fn peer_evict_one(&self, now_ms: i64) -> Result<bool> {
         let n = self.db().execute(
             "DELETE FROM peers WHERE key = (
@@ -302,7 +349,7 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Forget a peer. Its mirrored log is kept (see `peer_evict_one`).
+    /// Forget a peer.
     pub fn peer_remove(&self, key: &WitnessKey) -> Result<bool> {
         Ok(self
             .db()
@@ -332,52 +379,48 @@ impl Store {
         Ok(())
     }
 
-    pub fn peer_leaf_ids(&self, key: &WitnessKey) -> Result<Vec<Digest>> {
-        let db = self.db();
-        let mut st = db.prepare("SELECT id FROM peer_leaves WHERE peer = ?1 ORDER BY idx")?;
-        let rows = st.query_map([key.0.as_slice()], |r| digest(r, 0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Extend a peer's mirrored log. The caller must already have checked
-    /// that the full leaf list hashes to `head.root`.
-    pub fn peer_extend_log(
-        &self,
-        key: &WitnessKey,
-        new_ids: &[Digest],
-        head: &SignedTreeHead,
-    ) -> Result<()> {
-        let mut db = self.db();
-        let tx = db.transaction()?;
-        let have: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM peer_leaves WHERE peer = ?1",
-            [key.0.as_slice()],
-            |r| r.get(0),
-        )?;
-        if have as u64 + new_ids.len() as u64 != head.head.size {
-            return Err(StoreError::Corrupt("mirrored log length mismatch".into()));
-        }
-        for (i, id) in new_ids.iter().enumerate() {
-            tx.execute(
-                "INSERT INTO peer_leaves (peer, idx, id) VALUES (?1, ?2, ?3)",
-                params![key.0.as_slice(), have + i as i64, id.as_bytes()],
-            )?;
-        }
-        tx.execute(
+    /// Record the latest head of a peer's log this node has verified.
+    pub fn peer_set_head(&self, key: &WitnessKey, head: &SignedTreeHead) -> Result<()> {
+        self.db().execute(
             "UPDATE peers SET head = ?2 WHERE key = ?1",
             params![key.0.as_slice(), serde_json::to_string(head)?],
         )?;
-        tx.commit()?;
         Ok(())
     }
 
-    /// Leaf hashes of a peer's mirrored log.
-    pub fn peer_leaf_hashes(&self, key: &WitnessKey) -> Result<Vec<Digest>> {
-        Ok(self
-            .peer_leaf_ids(key)?
-            .iter()
-            .map(|id| merkle::leaf_hash(id.as_bytes()))
-            .collect())
+    /// Remember a checkpoint head seen over gossip. Returns a stored head
+    /// of the same log and size with a different root, if there is one.
+    pub fn log_head_insert(
+        &self,
+        h: &SignedTreeHead,
+        now_ms: i64,
+    ) -> Result<Option<SignedTreeHead>> {
+        let db = self.db();
+        let existing: Option<String> = db
+            .query_row(
+                "SELECT json FROM log_heads WHERE log = ?1 AND size = ?2 AND root != ?3",
+                params![
+                    h.head.log.0.as_slice(),
+                    h.head.size as i64,
+                    h.head.root.as_bytes()
+                ],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(j) = existing {
+            return Ok(Some(json(&j)?));
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO log_heads (log, size, root, json, received_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                h.head.log.0.as_slice(),
+                h.head.size as i64,
+                h.head.root.as_bytes(),
+                serde_json::to_string(h)?,
+                now_ms
+            ],
+        )?;
+        Ok(None)
     }
 
     // --------------------------------------------- foreign attestations
@@ -618,13 +661,14 @@ impl Store {
 
     pub fn cosig_insert(&self, c: &Signed<Cosignature>) -> Result<bool> {
         let n = self.db().execute(
-            "INSERT OR IGNORE INTO cosignatures (log, size, cosigner, root, json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT OR IGNORE INTO cosignatures (log, size, cosigner, root, json, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 c.body.log.0.as_slice(),
                 c.body.size as i64,
                 c.body.cosigner.0.as_slice(),
                 c.body.root.as_bytes(),
-                serde_json::to_string(c)?
+                serde_json::to_string(c)?,
+                c.body.timestamp_ms
             ],
         )?;
         Ok(n > 0)
@@ -675,6 +719,23 @@ impl Store {
             ],
         )?;
         Ok(n > 0)
+    }
+
+    /// The latest observation `observer` made of `subject`.
+    pub fn observation(
+        &self,
+        subject: &WitnessKey,
+        observer: &WitnessKey,
+    ) -> Result<Option<Signed<Observation>>> {
+        let j: Option<String> = self
+            .db()
+            .query_row(
+                "SELECT json FROM observations WHERE subject = ?1 AND observer = ?2",
+                params![subject.0.as_slice(), observer.0.as_slice()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        j.as_deref().map(json).transpose()
     }
 
     pub fn observations_of(
@@ -855,6 +916,50 @@ impl Store {
         Ok(all.into_iter().next())
     }
 
+    // ------------------------------------------------------------ pruning
+
+    /// Delete network data that is no longer needed. Evidence this node
+    /// signed (its log, attestations, anchors) is never touched. Returns
+    /// the number of rows deleted.
+    pub fn prune(&self, now_ms: i64, keep: &Retention) -> Result<usize> {
+        let db = self.db();
+        let mut n = 0;
+        // A cosigner's newest cosignature of a log vouches for everything
+        // before it; older ones only matter while bundles may still pick
+        // them.
+        n += db.execute(
+            "DELETE FROM cosignatures WHERE (at IS NULL OR at < ?1) AND size < (
+                SELECT MAX(c2.size) FROM cosignatures c2
+                WHERE c2.log = cosignatures.log AND c2.cosigner = cosignatures.cosigner)",
+            [now_ms - keep.cosignatures_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM observations WHERE observed_at < ?1",
+            [now_ms - keep.observations_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM alerts WHERE issued_at < ?1",
+            [now_ms - keep.alerts_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM beacons WHERE round < ?1",
+            [witness_core::beacon::round_at(now_ms - keep.beacons_ms) as i64],
+        )?;
+        n += db.execute(
+            "DELETE FROM foreign_attestations WHERE fetched_at < ?1",
+            [now_ms - keep.foreign_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM reputation WHERE at < ?1",
+            [now_ms - keep.reputation_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM log_heads WHERE received_at < ?1",
+            [now_ms - keep.log_heads_ms],
+        )?;
+        Ok(n)
+    }
+
     // -------------------------------------------------------------- tlsn
 
     pub fn tlsn_insert(&self, attestation: &Digest, receipt: &Signed<TlsnReceipt>) -> Result<()> {
@@ -999,5 +1104,92 @@ mod tests {
         assert!(s.request_cancelled(&r.id(), &kp.public()).unwrap());
         s.requests_prune(1000).unwrap();
         assert!(!s.request_cancelled(&r.id(), &kp.public()).unwrap());
+    }
+
+    fn head(kp: &Keypair, size: u64, root: &[u8], t: i64) -> SignedTreeHead {
+        witness_core::TreeHead {
+            log: kp.public(),
+            size,
+            root: Digest::of(root),
+            timestamp_ms: t,
+        }
+        .sign(kp)
+        .unwrap()
+    }
+
+    #[test]
+    fn conflicting_checkpoints_are_caught() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::open(t.path()).unwrap();
+        let kp = Keypair::generate().unwrap();
+        let a = head(&kp, 5, b"a", 1);
+        assert!(s.log_head_insert(&a, 1).unwrap().is_none());
+        assert!(s.log_head_insert(&a, 2).unwrap().is_none());
+        assert!(
+            s.log_head_insert(&head(&kp, 6, b"c", 2), 2)
+                .unwrap()
+                .is_none()
+        );
+        let other = s.log_head_insert(&head(&kp, 5, b"b", 3), 3).unwrap();
+        assert_eq!(other, Some(a));
+    }
+
+    #[test]
+    fn prunes_superseded_and_stale_data() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::open(t.path()).unwrap();
+        let log = Keypair::generate().unwrap();
+        let cosigner = Keypair::generate().unwrap();
+        let day = 86_400_000;
+        let now = 100 * day;
+        let cosig = |size: u64, at: i64| {
+            Signed::sign(
+                Cosignature {
+                    log: log.public(),
+                    size,
+                    root: Digest::of(&size.to_be_bytes()),
+                    timestamp_ms: at,
+                    cosigner: cosigner.public(),
+                },
+                &cosigner,
+            )
+            .unwrap()
+        };
+        s.cosig_insert(&cosig(1, now - 10 * day)).unwrap();
+        s.cosig_insert(&cosig(2, now - 3 * day)).unwrap();
+        s.cosig_insert(&cosig(3, now - day)).unwrap();
+        s.cosig_insert(&cosig(4, now)).unwrap();
+        let obs = Signed::sign(
+            Observation {
+                subject: log.public(),
+                ip: "203.0.113.1".parse().unwrap(),
+                observed_at_ms: now - 40 * day,
+                observer: cosigner.public(),
+            },
+            &cosigner,
+        )
+        .unwrap();
+        s.observation_upsert(&obs).unwrap();
+        s.log_head_insert(&head(&log, 1, b"x", 0), now - 8 * day)
+            .unwrap();
+
+        let n = s.prune(now, &Retention::default()).unwrap();
+        // Cosignatures 1 and 2 (superseded, older than two days), the
+        // observation and the old checkpoint.
+        assert_eq!(n, 4);
+        let sizes: Vec<u64> = s
+            .cosigned_sizes(&log.public())
+            .unwrap()
+            .into_iter()
+            .map(|(size, _)| size)
+            .collect();
+        assert_eq!(sizes, vec![4, 3]);
+        assert!(
+            s.observation(&log.public(), &cosigner.public())
+                .unwrap()
+                .is_none()
+        );
+        // Nothing left to prune.
+        assert_eq!(s.prune(now, &Retention::default()).unwrap(), 0);
     }
 }

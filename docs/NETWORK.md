@@ -1,7 +1,7 @@
 # Starting a Witness network
 
 This guide sets up a real, public Witness network: independent witnesses on
-the internet that mirror each other's logs, agree on who captures which
+the internet that audit each other's logs, agree on who captures which
 page, and give verdicts that hold up because the witnesses are genuinely
 independent.
 
@@ -23,7 +23,7 @@ So a real network needs:
 | **At least 3 witnesses, each in a different ASN** | "Agreed" needs 3 ASNs (`quorum.min_asns`), and each witness's location has to be confirmed by 2 others (`quorum.min_observers`). |
 | **At least 2 countries** | Assignment takes at most 2 witnesses per country (`network.max_per_country`). With the default 5 witnesses per request, 3 or more countries fill every slot. |
 | **Different operators** | The software can only check networks. Witnesses run by one person agree because one person runs them. For evidence others trust, each witness should be run by a different person or organization. |
-| **A public HTTPS endpoint on every witness** | Peers mirror a witness's log through its endpoint. A witness without one is never assigned requests and doesn't count toward verdicts. |
+| **A public HTTPS endpoint on every witness** | Peers audit a witness's log and fetch its attestations through its endpoint. A witness without one is never assigned requests and doesn't count toward verdicts. |
 | **An accurate clock** | Messages more than 5 minutes off are rejected. |
 
 Different providers usually means different ASNs: for example Hetzner
@@ -153,6 +153,7 @@ on every witness**, or witnesses disagree about who captures what:
 |---|---|
 | `network.replication` | 5 |
 | `network.max_per_country` | 2 |
+| `network.audit_logs` | 16 |
 | `beacon.drand_url` | `https://api.drand.sh` (quicknet) |
 
 These only change how *your* witness judges verdicts, but keep the
@@ -177,7 +178,24 @@ and `witness net status` warns about them: `quorum.trust_self_reported`,
 Change settings with `witness config set KEY VALUE`, then
 `sudo systemctl restart witness`.
 
-## 6. Running it
+## 6. Resources
+
+Each witness talks to a random sample of 16 peers a minute, audits about 16
+logs an hour with a consistency proof, and fetches other witnesses'
+attestations only for the URLs it follows. So its costs barely depend on
+how big the network is:
+
+| | Per witness |
+|---|---|
+| Network data (peers, observations, audit state, fetched attestations) | roughly 25–50 GB a year, bounded by pruning |
+| Own captures, `content.retain = normalized` | about 10 MB a day for 100 URLs checked hourly |
+| Own captures, `content.retain = full` | 0.1–0.5 GB a day for the same, depending on the pages |
+| Traffic | a few hundred requests a minute |
+
+`network.max_peers` (2000) bounds the peer table; raise it for a larger
+network.
+
+## 7. Running it
 
 - **Upgrades:** `git pull` and re-run the installer with the same options.
   Keys and data are kept. Nodes skip message types they don't know, so
@@ -189,12 +207,13 @@ Change settings with `witness config set KEY VALUE`, then
   `witness net peers`.
 - **Automatic:** syncing every minute, Bitcoin anchoring every hour, the
   IP-to-ASN table refresh every week.
-- **Retiring a witness:** stop it and keep the key. Its log stays verifiable
-  from the copies its peers mirrored. Peers retry it every ten minutes, stop
+- **Retiring a witness:** export the bundles that matter first
+  (`witness export`); bundles verify on their own, but nobody else keeps a
+  full copy of a witness's log. Keep the key. Peers retry it every ten minutes, stop
   assigning it requests after a week, and drop it first when their peer
   table fills up. `witness net remove-peer KEY` drops it at once.
 
-## 7. Moving on from a test cluster
+## 8. Moving on from a test cluster
 
 Test witnesses have signed attestations with test settings (fake ASNs, a
 predictable seed) into their permanent logs. For the public network, start
@@ -212,7 +231,7 @@ To keep a test witness's key instead, undo every test setting
 peers, remove the old LAN peers with `witness net remove-peer`, and
 restart it.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
@@ -224,3 +243,4 @@ restart it.
 | `no seed: no drand beacon` | Nobody can reach drand yet. Assignment waits for the day's beacon. |
 | Verdicts stay `INSUFFICIENT` | Fewer than 3 ASNs among the witnesses assigned to the URL, or their captures fall outside one 10-minute window. |
 | Messages rejected, heads look wrong | Clock skew: check `timedatectl`. |
+| A bundle has no cosignatures | The capture is newer than the log's last checkpoint. Checkpoints are hourly; auditors cosign within the following hour. |

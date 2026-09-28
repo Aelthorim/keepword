@@ -32,7 +32,11 @@ sync_interval_secs = 60
 replication = 5            # witnesses assigned per watch request
 max_per_country = 2
 max_requests_per_requester = 50
-max_peers = 500
+max_peers = 2000
+gossip_fanout = 16         # random peers exchanged gossip with each round
+audit_logs = 16            # auditors per log; same on every witness
+checkpoint_interval_secs = 3600  # this log's checkpoint for auditors
+cosign_interval_secs = 3600      # how often to audit each log
 # Serve raw captured content to others only for these hosts.
 serve_content_hosts = ["tagesschau.de", "bund.de"]
 trust_forwarded_for = false  # true only behind your own reverse proxy

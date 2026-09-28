@@ -260,7 +260,7 @@ witness-normalize   canonicalizer, site rules, diff + silent-edit classifier
 witness-capture     HTTP capture (cert, IP, redirects, SSRF guard),
                     headless render (feature "render"), WARC export
 witness-store       BLAKE3 blob store, SQLite index, log + tree heads,
-                    watchlist, change table, purge; peers, mirrored logs,
+                    watchlist, change table, purge; peers, audited heads,
                     gossip outbox, requests, cosignatures, observations,
                     alerts, beacons, anchors, reputation
 witness-node        `witness` CLI, peer API, federation, verdicts,
@@ -295,7 +295,7 @@ uses plain HTTPS between nodes instead:
 - **NAT is handled by push *and* pull.** Every exchange is started by the
   syncing node: it pulls a peer's outbox and pushes its own. A node without
   a public endpoint still sends and receives everything; it just can't be
-  mirrored.
+  audited or asked for its attestations.
 - **Smaller attack surface and dependency tree.** libp2p remains an option
   as a second transport. All messages are transport-agnostic signed
   statements.
@@ -309,20 +309,46 @@ separately on localhost.
 
 ### 6.2 Sync and gossip
 
-Each round, for each peer with an endpoint, a node:
+Nothing in a round grows with the size of the network, so the per-node
+cost stays about the same at 20 witnesses or 1000. Each round (every
+minute) a node:
 
-1. refreshes the peer's descriptor (it must still be the same key) and
-   learns the peers it knows;
-2. fetches its tree head and any new leaf IDs, then recomputes the root over
-   **every leaf it has ever mirrored from that peer**. A peer can extend its
-   history but never rewrite what it has shown; a mismatch is rejected;
-3. two validly signed heads of the same size with different roots are an
-   **equivocation proof**, stored, gossiped and alerted on. Equivocating
-   logs are excluded from assignment;
-4. fetches the new attestations and verifies signature, signer and ID;
-5. **cosigns** the head: "consistent with everything I have seen";
-6. pulls the peer's outbox, pushes its own, and receives an observation
-   receipt (§6.3).
+1. exchanges gossip with a **random sample** of peers
+   (`network.gossip_fanout`, 16): refreshes each one's descriptor, pulls
+   its outbox, pushes its own and gets an observation receipt (§6.3).
+   Messages still reach every node, over a few hops. The full peer list is
+   only fetched while a node knows few peers, and daily from its bootstrap
+   peers;
+2. **audits** the logs it is an auditor of, when due (below);
+3. fetches other witnesses' attestations for the URLs it follows (§6.5);
+4. prunes old data, at most hourly (§7).
+
+**Audits.** Each log has `network.audit_logs` (16) auditors: the witnesses
+ranked highest for it by `H("witness audit v1" ‖ log ‖ witness)`. Every
+node computes the same set, so each log gets 16 auditors and each witness
+audits about 16 logs, whatever the network's size. Once per
+`network.cosign_interval_secs` (an hour), an auditor:
+
+1. fetches the log's **checkpoint**: the latest head the log signed before
+   the start of the current hour (`network.checkpoint_interval_secs`), so
+   every auditor coming by in that hour sees the same head;
+2. checks with a consistency proof that it extends the last checkpoint it
+   verified (or is a prefix of it, for a lagging checkpoint). A log can
+   extend its history but never rewrite what an auditor has seen. The log
+   isn't copied: the proof is a few dozen hashes;
+3. **cosigns** it ("consistent with everything I have seen") and delivers
+   the cosignature to the log, which puts it in its bundles (§6.8). It is
+   not gossiped;
+4. gossips the checkpoint. Auditors that saw the same checkpoint send
+   byte-identical messages, which gossip deduplicates. Two validly signed
+   heads of the same log and size with different roots are an
+   **equivocation proof**, whoever holds them: stored, gossiped and alerted
+   on. Equivocating logs are excluded from assignment.
+
+This is how Certificate Transparency's witnesses work. The earlier design
+mirrored every peer's log and attestations and gossiped every
+cosignature, which cost each node nodes² × rounds of storage: a few
+hundred MB a day at 20 witnesses, over a terabyte at 1000.
 
 Gossip messages (descriptors, watch requests and cancellations, tree heads,
 cosignatures, observations, alerts, equivocation proofs, drand beacons,
@@ -340,9 +366,7 @@ Keys cost nothing, so a node limits what strangers can make it store:
 - **A full peer table evicts the least useful peer** to admit a new one
   with an endpoint: an equivocating log first, then peers without an
   endpoint, then peers that never synced within an hour of being learned
-  or haven't synced for a day. Healthy peers are never evicted, and an
-  evicted peer's mirrored log is kept, so it is re-checked for consistency
-  if it returns. Descriptors older than seven days are ignored.
+  or haven't synced for a day. Healthy peers are never evicted. Descriptors older than seven days are ignored.
 - **Beacons older than three days are refused.** Every historical drand
   beacon verifies, and there are millions.
 - Peers are synced eight at a time, and a peer whose last sync failed is
@@ -360,7 +384,9 @@ The receiver answers with an **observation receipt**: "I saw key K connect
 from IP X at time T", which floods like any gossip. A verifier maps each IP
 to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
 `quorum.asn_db`). A location counts once at least `min_observers` distinct
-observers (not K itself) agree on the same ASN. Without an ASN table nothing
+observers (not K itself) agree on the same ASN. An observer issues a new
+receipt for the same witness at the same address at most weekly, and hands
+back the existing one otherwise, so receipts don't grow with sync rounds. Without an ASN table nothing
 is corroborated. `quorum.trust_self_reported` exists for test networks
 only.
 
@@ -404,7 +430,13 @@ slightly different assignees, never zero.
 
 ### 6.5 Quorum, reputation and alerts
 
-For a URL, a node gathers its own and mirrored attestations and takes the
+Attestations aren't copied around the network. A node that needs a verdict
+on a URL asks the witnesses assigned to it (this epoch and the last) for
+their recent attestations of it (`GET /v1/attestations?url=`). Nodes do
+this every quorum window for the URLs they capture for the network and the
+ones they requested, and `witness verdict` and the web UI do it on demand.
+
+For a URL, a node gathers its own and fetched attestations and takes the
 latest per witness inside a time window. It compares them within the
 largest class sharing capture method and normalizer profile, groups them by
 comparison hash, and counts distinct corroborated ASNs, never keys:
@@ -485,10 +517,11 @@ witness verify https://example.org/terms                 # includes "tls notary"
 
 ### 6.8 Bundles, cosigned
 
-Bundles are built against the largest tree head that other witnesses have
-cosigned, and carry those cosignatures. For a log to lie to one verifier,
-it must then have lied consistently to every cosigner, and any two
-conflicting heads prove it.
+Bundles are built against the largest checkpoint that the log's auditors
+have cosigned, and carry those cosignatures. For a log to lie to one
+verifier, it must then have lied consistently to every auditor, and any two
+conflicting heads prove it. A capture is covered from the first checkpoint
+after it, so within about an hour.
 
 ## 7. Storage, retention and law
 
@@ -508,6 +541,11 @@ before public operation. The design aims to leave room for compliance.
   outlets, government pages, and corporate ToS and privacy policies. The
   proof property survives: whoever holds the original can show it matches
   the hash.
+- **Network data is pruned hourly.** Cosignatures superseded by a newer
+  one from the same auditor (after two days), observations after 30 days,
+  fetched attestations after 90, reputation events after 60, alerts after
+  180, beacons after 7, and gossip after 7 (31 for requests). A node never
+  deletes what it signed itself: its log, attestations and anchors.
 - **Points to check with counsel:** §44b UrhG (text-and-data-mining
   exception, including machine-readable opt-outs) and whether retention
   should honour TDM reservations; GDPR Art. 17 and Art. 85 (journalistic
@@ -521,7 +559,7 @@ before public operation. The design aims to leave room for compliance.
 | M0 | Single node: fetch → normalize → sign → Merkle log → `verify`; bundles; WARC export; audit | **done** |
 | M1 | Watchlists, diff engine, silent-edit classification, web UI with edit history | **done** |
 | M1.5 | Normalizer v2: live-clock masking, consent/ad vendors, regression corpus | **done** (corpus is hand-built; grow it from real captures) |
-| M2 | HTTP federation, log mirroring, cosigning, equivocation proofs, gossip, watch requests with assignment | **done** |
+| M2 | HTTP federation, log audits, cosigning, equivocation proofs, gossip, watch requests with assignment | **done** |
 | M3 | drand epoch seeds and capture lower bound, observation receipts + ASN corroboration, verdicts, reputation, OpenTimestamps anchoring | **done** |
 | M4 | TLSNotary proof tier, cross-witness cloaking (split) alerts | **done** |
 | next | Real-world corpus; C2SP-compatible log view; automatic notary selection from assignment; tile-based log serving for large logs; Postgres indexer across many logs | |

@@ -25,11 +25,16 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/v1/descriptor", get(descriptor))
         .route("/v1/peers", get(peers))
         .route("/v1/log/head", get(head))
+        .route("/v1/log/checkpoint", get(checkpoint))
         .route("/v1/log/leaves", get(leaves))
         .route("/v1/log/consistency", get(consistency))
         .route("/v1/log/inclusion/{id}", get(inclusion))
         .route("/v1/attestation/{id}", get(attestation))
-        .route("/v1/attestations", post(attestations))
+        .route(
+            "/v1/attestations",
+            get(attestations_by_url).post(attestations),
+        )
+        .route("/v1/cosignatures", post(cosignature))
         .route("/v1/bundle/{id}", get(bundle))
         .route("/v1/blob/{hash}", get(blob))
         .route("/v1/gossip", get(gossip_pull).post(gossip_push))
@@ -83,6 +88,14 @@ async fn peers(State(node): State<Arc<Node>>) -> ApiResult<Vec<Signed<Descriptor
 
 async fn head(State(node): State<Arc<Node>>) -> Result<Response, ApiError> {
     match node.store.latest_tree_head()? {
+        Some(h) => Ok(Json(h).into_response()),
+        None => Err(not_found()),
+    }
+}
+
+/// The head auditors cosign this interval (see `Node::checkpoint`).
+async fn checkpoint(State(node): State<Arc<Node>>) -> Result<Response, ApiError> {
+    match node.checkpoint()? {
         Some(h) => Ok(Json(h).into_response()),
         None => Err(not_found()),
     }
@@ -161,6 +174,42 @@ async fn attestations(
         }
     }
     Ok(Json(out))
+}
+
+/// This node's own attestations of a URL since a time (newest 500), for
+/// witnesses computing a verdict.
+async fn attestations_by_url(
+    State(node): State<Arc<Node>>,
+    Query(q): Query<HashMap<String, String>>,
+) -> ApiResult<Vec<SignedAttestation>> {
+    let url = q.get("url").ok_or_else(|| bad("url is required"))?;
+    let since: i64 = match q.get("since") {
+        Some(s) => s.parse().map_err(|_| bad("since must be milliseconds"))?,
+        None => 0,
+    };
+    let url = witness_core::target::canonical_url(url).map_err(|_| bad("bad url"))?;
+    let mut out: Vec<SignedAttestation> = node
+        .store
+        .history(url.as_str())?
+        .into_iter()
+        .map(|r| r.signed)
+        .filter(|a| a.attestation.fetched_at_ms >= since)
+        .collect();
+    let skip = out.len().saturating_sub(500);
+    out.drain(..skip);
+    Ok(Json(out))
+}
+
+/// An auditor delivering its cosignature of this node's log.
+async fn cosignature(
+    State(node): State<Arc<Node>>,
+    Json(c): Json<Signed<witness_core::net::Cosignature>>,
+) -> ApiResult<serde_json::Value> {
+    if node.receive_cosignature(&c)? {
+        Ok(Json(serde_json::json!({ "accepted": true })))
+    } else {
+        Ok(Json(serde_json::json!({ "accepted": false })))
+    }
 }
 
 fn content_allowed(node: &Node, url: &str) -> bool {

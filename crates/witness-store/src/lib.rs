@@ -31,7 +31,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = r#"
 CREATE TABLE attestations (
@@ -153,7 +153,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
-            0..=2 => {
+            0..=3 => {
                 let tx = conn.unchecked_transaction()?;
                 if v == 0 {
                     tx.execute_batch(SCHEMA)?;
@@ -161,7 +161,10 @@ impl Store {
                 if v <= 1 {
                     tx.execute_batch(net::SCHEMA_V2)?;
                 }
-                tx.execute_batch(net::SCHEMA_V3)?;
+                if v <= 2 {
+                    tx.execute_batch(net::SCHEMA_V3)?;
+                }
+                tx.execute_batch(net::SCHEMA_V4)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 tx.commit()?;
             }
@@ -302,6 +305,23 @@ impl Store {
             .optional()?;
         json.map(|j| serde_json::from_str(&j).map_err(Into::into))
             .transpose()
+    }
+
+    /// The largest tree head signed at or before `t_ms`: the log's
+    /// checkpoint for that time.
+    pub fn tree_head_before(&self, t_ms: i64) -> Result<Option<SignedTreeHead>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT json FROM tree_heads ORDER BY size DESC")?;
+        let mut rows = st.query([])?;
+        // Heads are signed in size order, so the first one old enough wins;
+        // only heads from after `t_ms` are skipped.
+        while let Some(row) = rows.next()? {
+            let h: SignedTreeHead = serde_json::from_str(&row.get::<_, String>(0)?)?;
+            if h.head.timestamp_ms <= t_ms {
+                return Ok(Some(h));
+            }
+        }
+        Ok(None)
     }
 
     pub fn tree_head_at(&self, size: u64) -> Result<Option<SignedTreeHead>> {
@@ -696,6 +716,24 @@ mod tests {
         let s = Store::open(t.path()).unwrap();
         assert!(s.peers().unwrap().is_empty());
         assert!(!s.peer_evict_one(0).unwrap());
+        assert_eq!(s.prune(0, &net::Retention::default()).unwrap(), 0);
+    }
+
+    #[test]
+    fn checkpoints_are_the_last_head_before_a_time() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::open(t.path()).unwrap();
+        let kp = Keypair::generate().unwrap();
+        assert!(s.tree_head_before(i64::MAX).unwrap().is_none());
+        for (i, when) in [100, 200, 300].into_iter().enumerate() {
+            let sa = att(&kp, "https://a.example/", &[i as u8], when);
+            s.commit(&sa, &kp, when).unwrap();
+        }
+        let size_at = |t| s.tree_head_before(t).unwrap().map(|h| h.head.size);
+        assert_eq!(size_at(50), None);
+        assert_eq!(size_at(100), Some(1));
+        assert_eq!(size_at(250), Some(2));
+        assert_eq!(size_at(1000), Some(3));
     }
 
     #[test]
