@@ -342,8 +342,14 @@ async fn gossip_pull(
     }))
 }
 
+/// Where a request came from. Behind a reverse proxy that is the address
+/// the proxy appended to X-Forwarded-For, but only if the connection came
+/// from the proxy: from anywhere else, say a published container port, the
+/// header is whatever the client wrote, and observation receipts (where a
+/// peer connects from, which places it) must not be forgeable.
 fn client_ip(node: &Node, addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
-    if node.config.network.trust_forwarded_for {
+    if node.config.network.trust_forwarded_for && !witness_capture::netpolicy::is_public(addr.ip())
+    {
         if let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())

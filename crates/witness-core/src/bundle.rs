@@ -357,14 +357,15 @@ impl Bundle {
                     "drand beacon signature is invalid",
                 ),
                 // Allow a minute of clock skew between the witness and drand.
-                Ok(()) if b.time_ms() > a.fetched_at_ms + 60_000 => r.push(
-                    "not before",
-                    Status::Fail,
-                    format!(
-                        "beacon round {} is from after the claimed capture time",
-                        b.round
+                Ok(()) if b.time_ms() > a.fetched_at_ms.saturating_add(crate::beacon::SKEW_MS) => r
+                    .push(
+                        "not before",
+                        Status::Fail,
+                        format!(
+                            "beacon round {} is from after the claimed capture time",
+                            b.round
+                        ),
                     ),
-                ),
                 Ok(()) => r.push(
                     "not before",
                     Status::Pass,

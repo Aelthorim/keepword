@@ -424,10 +424,12 @@ impl Node {
             let assigned = assigned_cache.entry(epoch).or_insert_with(|| {
                 self.assigned_near(&parsed, a.attestation.fetched_at_ms, &cands)
             });
-            // Without a beacon nobody can be assigned; count everyone.
+            // Without the epoch's beacon nobody can tell who was assigned,
+            // so nobody counts: counting everyone would let any key in,
+            // for instance by dating its captures in such an epoch.
             if assigned
                 .as_ref()
-                .is_none_or(|set| set.contains(&a.attestation.witness))
+                .is_some_and(|set| set.contains(&a.attestation.witness))
             {
                 base.push(a.clone());
             }
@@ -511,62 +513,76 @@ impl Node {
     /// alerts.
     pub fn review_verdicts(&self) -> Result<()> {
         let now = now_ms();
-        let q = &self.config.quorum;
         let window = self.window_ms();
         let since = now - (2 * window).max(self.recheck_deadline(0) + window);
-        let me = self.key.public();
+        let mut failed = Vec::new();
         for url in self.store.foreign_urls_since(since)? {
-            let (v, dis, rc) = self.resolve_verdict(&url)?;
-            // Each draw is an independent sample; settle each on its own,
-            // once, by the round it rechecked (whether or not that round is
-            // still the current one), so repeated alerts need repeated
-            // independent evidence.
-            for draw in rc.draws.iter().filter(|x| x.complete) {
-                self.settle_draw(&url, &rc, draw, now)?;
+            // One URL that can't be reviewed (a damaged stored row, say)
+            // must not hold up the others.
+            if let Err(e) = self.review_url(&url, now) {
+                failed.push(format!("{url}: {e:#}"));
             }
-            let Some(end) = v.evaluation.window_end_ms else {
-                continue;
-            };
-            let Some(d) = dis else {
-                // An undisputed agreement: reputation, once per slot.
-                if let Verdict::Agreed { group, dissenters } = &v.evaluation.verdict {
-                    let slot = end / window;
-                    for w in &group.witnesses {
-                        self.store.reputation_record(w, &url, slot, 1.0, now)?;
-                    }
-                    for w in dissenters {
-                        self.store.reputation_record(w, &url, slot, -3.0, now)?;
-                    }
+        }
+        if !failed.is_empty() {
+            anyhow::bail!("{} URLs not reviewed: {}", failed.len(), failed.join("; "));
+        }
+        Ok(())
+    }
+
+    fn review_url(&self, url: &str, now: i64) -> Result<()> {
+        let q = &self.config.quorum;
+        let window = self.window_ms();
+        let me = self.key.public();
+        let (v, dis, rc) = self.resolve_verdict(url)?;
+        // Each draw is an independent sample; settle each on its own, once,
+        // by the round it rechecked (whether or not that round is still the
+        // current one), so repeated alerts need repeated independent
+        // evidence.
+        for draw in rc.draws.iter().filter(|x| x.complete) {
+            self.settle_draw(url, &rc, draw, now)?;
+        }
+        let Some(end) = v.evaluation.window_end_ms else {
+            return Ok(());
+        };
+        let Some(d) = dis else {
+            // An undisputed agreement: reputation, once per slot.
+            if let Verdict::Agreed { group, dissenters } = &v.evaluation.verdict {
+                let slot = end / window;
+                for w in &group.witnesses {
+                    self.store.reputation_record(w, url, slot, 1.0, now)?;
                 }
-                continue;
-            };
-            if !rc.draws.iter().any(|x| x.slot == d.slot) {
-                self.maybe_request_recheck(&url, &d)?;
+                for w in dissenters {
+                    self.store.reputation_record(w, url, slot, -3.0, now)?;
+                }
             }
-            if let Verdict::Split { groups } = &v.evaluation.verdict {
-                let recent = self.store.round_outcomes(&url, q.split_rounds as u32)?;
-                let splits = recent.iter().filter(|o| *o == "split").count();
-                if splits >= q.split_confirmations
-                    && !self
-                        .store
-                        .alert_exists("split", &url, &me, now - 86_400_000)?
-                {
-                    let summary = format!(
-                        "confirmed by rechecks in {splits} of the last {} disputed rounds: {}",
-                        recent.len(),
-                        groups
-                            .iter()
-                            .map(|g| format!("{} networks saw {}", g.asns.len(), g.hash.short()))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    self.raise_alert(
-                        AlertKind::Split,
-                        Some(&url),
-                        summary,
-                        groups.iter().map(|g| g.hash).collect(),
-                    )?;
-                }
+            return Ok(());
+        };
+        if !rc.draws.iter().any(|x| x.slot == d.slot) {
+            self.maybe_request_recheck(url, &d)?;
+        }
+        if let Verdict::Split { groups } = &v.evaluation.verdict {
+            let recent = self.store.round_outcomes(url, q.split_rounds as u32)?;
+            let splits = recent.iter().filter(|o| *o == "split").count();
+            if splits >= q.split_confirmations
+                && !self
+                    .store
+                    .alert_exists("split", url, &me, now - 86_400_000)?
+            {
+                let summary = format!(
+                    "confirmed by rechecks in {splits} of the last {} disputed rounds: {}",
+                    recent.len(),
+                    groups
+                        .iter()
+                        .map(|g| format!("{} networks saw {}", g.asns.len(), g.hash.short()))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                self.raise_alert(
+                    AlertKind::Split,
+                    Some(url),
+                    summary,
+                    groups.iter().map(|g| g.hash).collect(),
+                )?;
             }
         }
         Ok(())
@@ -720,10 +736,14 @@ impl Node {
 }
 
 /// Whether an attestation's claimed fetch time is believable: not in the
-/// future, and not before the drand round it embeds.
+/// future, and not before the drand round it embeds (with the clock skew
+/// bundles allow, so a witness whose clock is a little behind isn't
+/// silently left out of verdicts).
 pub fn plausible_time(a: &witness_core::Attestation, now_ms: i64) -> bool {
     a.fetched_at_ms <= now_ms + crate::federation::SKEW_MS
-        && a.beacon
-            .as_ref()
-            .is_none_or(|b| b.time_ms() <= a.fetched_at_ms)
+        && a.beacon.as_ref().is_none_or(|b| {
+            b.time_ms()
+                <= a.fetched_at_ms
+                    .saturating_add(witness_core::beacon::SKEW_MS)
+        })
 }

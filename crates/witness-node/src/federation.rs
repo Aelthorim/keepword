@@ -61,6 +61,86 @@ const PEER_LIST_EVERY_MS: i64 = 86_400_000;
 /// at most this often. Observations are valid for 30 days.
 const OBSERVATION_REFRESH_MS: i64 = 7 * 86_400_000;
 const GOSSIP_PAGE: u32 = 500;
+/// Alerts older than this aren't taken; gossip only keeps a week anyway.
+const ALERT_MAX_AGE_MS: i64 = 7 * 86_400_000;
+/// A peer that synced within this long counts as working when picking
+/// whom to gossip with.
+const HEALTHY_MS: i64 = 86_400_000;
+/// Messages this node takes in an hour, all together, from keys it has
+/// neither synced with nor seen push to it (see `Limits`).
+const UNPROVEN_PER_HOUR: u64 = 2000;
+/// Beacon checks: a BLS pairing each, so at most this many at once...
+const BEACON_CHECKS: f64 = 20.0;
+/// ...and one more every this many milliseconds.
+const BEACON_CHECK_EVERY_MS: f64 = 3000.0;
+
+/// Most messages of one kind this node takes from one key in an hour. Keys
+/// are free and any key gets into the peer table with a descriptor, so
+/// without a cap one key could fill every node's disk. The caps sit well
+/// above what an honest witness sends.
+fn hourly_cap(kind: &str) -> u64 {
+    match kind {
+        "descriptor" | "equivocation" => 10,
+        "tree_head" => 60,
+        "request" | "cancel" => 100,
+        _ => 200,
+    }
+}
+
+/// What others may still make this node store and check, in memory.
+#[derive(Debug, Default)]
+pub(crate) struct Limits {
+    /// The hour the counts below are for.
+    hour: i64,
+    /// Messages taken this hour, per key and kind.
+    taken: HashMap<(WitnessKey, &'static str), u64>,
+    /// Messages taken this hour from keys with no proof behind them.
+    unproven: u64,
+    /// Beacon checks left, and when they were last topped up.
+    beacon_checks: f64,
+    beacon_checked_ms: i64,
+}
+
+impl Limits {
+    fn roll(&mut self, now: i64) {
+        let hour = now.div_euclid(3_600_000);
+        if hour != self.hour {
+            self.hour = hour;
+            self.taken.clear();
+            self.unproven = 0;
+        }
+    }
+
+    fn allows(&mut self, key: &WitnessKey, kind: &'static str, unproven: bool, now: i64) -> bool {
+        self.roll(now);
+        (!unproven || self.unproven < UNPROVEN_PER_HOUR)
+            && self.taken.get(&(*key, kind)).copied().unwrap_or(0) < hourly_cap(kind)
+    }
+
+    fn take(&mut self, key: &WitnessKey, kind: &'static str, unproven: bool, now: i64) {
+        self.roll(now);
+        *self.taken.entry((*key, kind)).or_default() += 1;
+        if unproven {
+            self.unproven += 1;
+        }
+    }
+
+    fn beacon_check(&mut self, now: i64) -> bool {
+        if self.beacon_checked_ms == 0 {
+            self.beacon_checks = BEACON_CHECKS;
+        } else {
+            let refill = (now - self.beacon_checked_ms).max(0) as f64 / BEACON_CHECK_EVERY_MS;
+            self.beacon_checks = (self.beacon_checks + refill).min(BEACON_CHECKS);
+        }
+        self.beacon_checked_ms = now;
+        if self.beacon_checks >= 1.0 {
+            self.beacon_checks -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GossipPage {
@@ -112,6 +192,13 @@ pub struct SyncReport {
     pub gossip_in: usize,
     pub gossip_out: usize,
     pub errors: Vec<(String, String)>,
+}
+
+/// Record a failed step of a sync round in its report.
+fn note(report: &mut SyncReport, step: &str, r: Result<()>) {
+    if let Err(e) = r {
+        report.errors.push((step.to_string(), format!("{e:#}")));
+    }
 }
 
 #[derive(Debug, Default)]
@@ -171,33 +258,44 @@ impl Node {
     /// Validate and store one gossip message; returns whether it was new and
     /// accepted (and so will be forwarded).
     pub fn ingest(&self, g: Gossip) -> Result<bool> {
+        self.ingest_from(g, false)
+    }
+
+    /// `ingest`, for a message a bootstrap peer vouched for (its peer list):
+    /// the operator trusts those to introduce witnesses.
+    pub(crate) fn ingest_from(&self, g: Gossip, vouched: bool) -> Result<bool> {
         let now = now_ms();
         if self.store.gossip_seen(&g.id())? {
             return Ok(false);
         }
-        if g.verify().is_err() {
-            return Ok(false);
-        }
         let me = self.key.public();
-        // Keys are free, so everything but descriptors must come from a
-        // witness in the peer table, whose size is capped. Otherwise anyone
-        // could flood alerts, requests and receipts from throwaway keys.
-        let signer = match &g {
-            Gossip::Descriptor(_) | Gossip::Beacon(_) => None,
-            Gossip::Request(r) => Some(r.body.requester),
-            Gossip::Cancel(c) => Some(c.body.requester),
-            Gossip::Recheck(r) => Some(r.body.requester),
-            Gossip::TreeHead(h) => Some(h.head.log),
-            Gossip::Cosignature(c) => Some(c.body.cosigner),
-            Gossip::Observation(o) => Some(o.body.observer),
-            Gossip::Alert(a) => Some(a.body.issuer),
-            Gossip::Equivocation { a, .. } => Some(a.head.log),
-            Gossip::TlsnReceipt(r) => Some(r.body.verifier),
-        };
-        if let Some(k) = signer {
-            if k != me && self.store.peer(&k)?.is_none() {
+        // Cheap checks before any signature is checked. Keys are free, so
+        // everything but descriptors and beacons must come from a witness in
+        // the peer table, whose size is capped; and every key may only make
+        // this node take so much (`hourly_cap`), and keys with nothing
+        // behind them only so much together.
+        let signer = g.signer().filter(|k| *k != me);
+        let mut unproven = false;
+        if let Some(k) = &signer {
+            let peer = self.store.peer(k)?;
+            if peer.is_none() && !matches!(g, Gossip::Descriptor(_)) {
                 return Ok(false);
             }
+            // Proof: this node synced with it, or saw it push from somewhere.
+            unproven = !vouched
+                && peer.as_ref().is_none_or(|p| p.last_ok.is_none())
+                && self.store.observation(k, &me)?.is_none();
+            if !self.limits().allows(k, g.kind(), unproven, now) {
+                return Ok(false);
+            }
+        }
+        if let Gossip::Beacon(b) = &g {
+            if !self.beacon_wanted(b, now)? {
+                return Ok(false);
+            }
+        }
+        if g.verify().is_err() {
+            return Ok(false);
         }
         let accept = match &g {
             Gossip::Descriptor(d) => self.accept_descriptor(d, now)?,
@@ -224,38 +322,69 @@ impl Node {
                 self.receive_cosignature(c)?;
                 false
             }
+            // A node places other witnesses only where it saw them itself,
+            // and learns where it is from receipts about it (see
+            // `vantage::corroborate`). So it keeps its own receipts and the
+            // ones about it, and passes none on.
             Gossip::Observation(o) => {
-                if o.body.observed_at_ms > now + SKEW_MS {
-                    false
-                } else {
+                if o.body.observed_at_ms <= now + SKEW_MS
+                    && (o.body.subject == me || o.body.observer == me)
+                {
                     self.store.observation_upsert(o)?;
-                    true
                 }
+                false
             }
             Gossip::Alert(a) => {
-                self.store.alert_insert(a)?;
-                true
+                let t = a.body.issued_at_ms;
+                // One dated ahead would never be pruned.
+                if t > now + SKEW_MS || t < now - ALERT_MAX_AGE_MS {
+                    false
+                } else {
+                    self.store.alert_insert(a)?;
+                    true
+                }
             }
             Gossip::Equivocation { a, b } => {
                 self.store.equivocation_insert(a, b, now)?;
                 true
             }
             Gossip::Beacon(b) => {
-                let t = b.time_ms();
-                if t > now + SKEW_MS || t < now - BEACON_MAX_AGE_MS {
-                    false
-                } else {
-                    self.store.beacon_insert(b)?;
-                    true
-                }
+                self.store.beacon_insert(b)?;
+                true
             }
             // Receipts travel for transparency; provers store their own.
             Gossip::TlsnReceipt(r) => r.body.verified_at_ms <= now + SKEW_MS,
         };
         if accept {
+            if let Some(k) = &signer {
+                self.limits().take(k, g.kind(), unproven, now);
+            }
             self.store.gossip_insert(&g, now)?;
         }
         Ok(accept)
+    }
+
+    fn limits(&self) -> std::sync::MutexGuard<'_, Limits> {
+        self.limits.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Whether a gossiped beacon is worth a BLS check: recent, one this
+    /// node can use (newer than any it holds, or a day's epoch seed it
+    /// lacks), and within the budget of checks. Anyone may send beacons,
+    /// and each check costs milliseconds of CPU.
+    fn beacon_wanted(&self, b: &witness_core::beacon::Beacon, now: i64) -> Result<bool> {
+        let t = b.time_ms();
+        if t > now + SKEW_MS || t < now - BEACON_MAX_AGE_MS {
+            return Ok(false);
+        }
+        let useful = if beacon::epoch_round(epoch_of(t)) == b.round {
+            self.store.beacon(b.round)?.is_none()
+        } else {
+            self.store
+                .beacon_latest()?
+                .is_none_or(|latest| b.round > latest.round)
+        };
+        Ok(useful && self.limits().beacon_check(now))
     }
 
     fn accept_descriptor(&self, d: &Signed<Descriptor>, now: i64) -> Result<bool> {
@@ -290,22 +419,25 @@ impl Node {
             Ok(u) => u,
             Err(_) => return Ok(false),
         };
+        // Checked, not wrapping: a request issued ages ago and expiring ages
+        // ahead must not pass for a short one.
         let ok = canonical.as_str() == b.url
             && b.every_secs >= MIN_REQUEST_EVERY_SECS
             && b.issued_at_ms <= now + SKEW_MS
             && b.expires_at_ms > now
-            && b.expires_at_ms - b.issued_at_ms <= MAX_REQUEST_MS
+            && b.expires_at_ms
+                .checked_sub(b.issued_at_ms)
+                .is_some_and(|d| d <= MAX_REQUEST_MS)
             && !self.store.request_cancelled(&r.id(), &b.requester)?
             && self.store.requests_active_by(&b.requester, now)?
                 < self.config.network.max_requests_per_requester;
         if !ok {
             return Ok(false);
         }
+        // The next sync takes it on if this node is assigned. Working out
+        // every request's assignment again per request would let a burst of
+        // them keep a node busy.
         self.store.request_insert(r)?;
-        // Take it on right away if this node is assigned.
-        if let Ok((seed, _)) = self.epoch_seed_cached(epoch_of(now)) {
-            self.apply_requests(&seed, now)?;
-        }
         Ok(true)
     }
 
@@ -318,18 +450,12 @@ impl Node {
         let expires = match self.store.request(&b.request)? {
             Some(r) if r.body.requester != b.requester => return Ok(false),
             Some(r) => r.body.expires_at_ms,
-            None => b.issued_at_ms + MAX_REQUEST_MS,
+            None => b.issued_at_ms.saturating_add(MAX_REQUEST_MS),
         };
-        if !self
-            .store
-            .request_cancel(&b.request, &b.requester, expires)?
-        {
-            return Ok(false);
-        }
-        if let Ok((seed, _)) = self.epoch_seed_cached(epoch_of(now)) {
-            self.apply_requests(&seed, now)?;
-        }
-        Ok(true)
+        // The next sync drops the watch if it was this node's.
+        self.store
+            .request_cancel(&b.request, &b.requester, expires)
+            .map_err(Into::into)
     }
 
     fn record_equivocation(&self, a: &SignedTreeHead, b: &SignedTreeHead) -> Result<()> {
@@ -366,7 +492,17 @@ impl Node {
         if let Some(db) = &self.asn_db {
             let me = self.key.public();
             let since = now - 30 * 86_400_000;
-            let obs = self.store.observations_of(key, since)?;
+            // Only this node's own receipt can place another witness, so
+            // that is all that is read: this runs for every peer, often.
+            let obs = if *key == me {
+                self.store.observations_of(key, since)?
+            } else {
+                self.store
+                    .observation(key, &me)?
+                    .filter(|o| o.body.observed_at_ms >= since)
+                    .into_iter()
+                    .collect()
+            };
             // The network each observer connects from, as this node saw it.
             let observer_asn = |observer: &WitnessKey| {
                 self.store
@@ -484,7 +620,7 @@ impl Node {
     /// for. Returns how many URLs it watches for the network.
     fn apply_requests(&self, seed: &Digest, now: i64) -> Result<usize> {
         let me = self.key.public();
-        let cands = self.candidates(now)?;
+        let cands = self.candidates_snapshot(now)?;
         let net = &self.config.network;
         let mut by_url: std::collections::BTreeMap<String, RequestWatch> = Default::default();
         let mut not_mine = HashSet::new();
@@ -725,11 +861,30 @@ impl Node {
             })
             .collect();
         ranked.sort_by_key(|a| a.0);
-        let targets: Vec<(Peer, bool)> = ranked
+        // Mostly peers that answered within a day, and a few others, to find
+        // new peers and notice ones that are back. Anyone can announce
+        // endpoints nobody answers on; they must not crowd the working
+        // witnesses out of a round.
+        let (healthy, others): (Vec<_>, Vec<_>) = ranked
             .into_iter()
-            .enumerate()
-            .filter(|(i, (_, p))| *i < fanout || due_audit.contains(&p.key))
-            .map(|(_, (_, p))| {
+            .partition(|(_, p)| p.last_ok.is_some_and(|t| now - t < HEALTHY_MS));
+        let explore = if others.is_empty() {
+            0
+        } else {
+            (fanout / 4).max(1)
+        };
+        let mut chosen: HashSet<WitnessKey> = healthy
+            .iter()
+            .take(fanout.saturating_sub(explore))
+            .map(|(_, p)| p.key)
+            .collect();
+        let rest = fanout.saturating_sub(chosen.len());
+        chosen.extend(others.iter().take(rest).map(|(_, p)| p.key));
+        let targets: Vec<(Peer, bool)> = healthy
+            .into_iter()
+            .chain(others)
+            .filter(|(_, p)| chosen.contains(&p.key) || due_audit.contains(&p.key))
+            .map(|(_, p)| {
                 let audit = due_audit.contains(&p.key);
                 (p, audit)
             })
@@ -766,12 +921,20 @@ impl Node {
                 }
             }
         }
-        self.refresh_candidates(now_ms())?;
-        self.reconcile_requests().await?;
-        self.run_rechecks().await?;
-        report.new_attestations = self.refresh_followed().await?;
-        self.review_verdicts()?;
-        self.prune_if_due()?;
+        // Each step on its own: one that keeps failing must not stop the
+        // others, least of all pruning.
+        let r = self.refresh_candidates(now_ms()).map(|_| ());
+        note(&mut report, "candidates", r);
+        let r = self.reconcile_requests().await.map(|_| ());
+        note(&mut report, "requests", r);
+        let r = self.run_rechecks().await.map(|_| ());
+        note(&mut report, "rechecks", r);
+        match self.refresh_followed().await {
+            Ok(n) => report.new_attestations = n,
+            Err(e) => note(&mut report, "refresh", Err(e)),
+        }
+        note(&mut report, "verdicts", self.review_verdicts());
+        note(&mut report, "prune", self.prune_if_due());
         Ok(report)
     }
 
@@ -787,21 +950,25 @@ impl Node {
         if d.body.key != peer.key {
             bail!("endpoint now serves a different witness key");
         }
-        if self.ingest(Gossip::Descriptor(d))? {
+        // Its own endpoint served it: that is proof enough.
+        if self.ingest_from(Gossip::Descriptor(d), true)? {
             stats.gossip_in += 1;
         }
 
         // Descriptors spread over gossip. The full list is only fetched
         // while this node knows few peers, or daily from bootstrap peers.
+        // A bootstrap peer's list is taken whole, so a new node learns a
+        // large network at once.
+        let bootstrap = self.is_bootstrap(ep);
         if want_peers
-            || (self.is_bootstrap(ep)
+            || (bootstrap
                 && peer
                     .last_ok
                     .is_none_or(|t| now_ms() - t >= PEER_LIST_EVERY_MS))
         {
             let others: Vec<Signed<Descriptor>> = self.net.get_json(&join(ep, "/v1/peers")).await?;
             for o in others.into_iter().take(self.config.network.max_peers) {
-                if self.ingest(Gossip::Descriptor(o))? {
+                if self.ingest_from(Gossip::Descriptor(o), bootstrap)? {
                     stats.gossip_in += 1;
                 }
             }
@@ -1068,7 +1235,7 @@ impl Node {
     pub async fn refresh_url(&self, url: &str) -> Result<usize> {
         let url = target::canonical_url(url)?;
         let now = now_ms();
-        let cands = self.candidates(now)?;
+        let cands = self.candidates_snapshot(now)?;
         let mut targets: HashSet<WitnessKey> = HashSet::new();
         let epoch = epoch_of(now);
         for e in [epoch, epoch.saturating_sub(1)] {
@@ -1089,9 +1256,18 @@ impl Node {
                 targets.extend(self.recheckers(&url, end, &c, &cands));
             }
         }
-        let new = self
-            .fetch_attestations(&url, targets, now - crate::consensus::LOOKBACK_MS)
-            .await?;
+        // A week of every witness's attestations is up to megabytes per URL.
+        // After the first fetch, ask only for what is new since the last
+        // one, with a margin for captures that are published late.
+        let full = now - crate::consensus::LOOKBACK_MS;
+        let since = self
+            .sched
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_refresh
+            .get(url.as_str())
+            .map_or(full, |t| (t - 2 * self.window_ms()).max(full));
+        let new = self.fetch_attestations(&url, targets, since).await?;
         self.sched
             .lock()
             .unwrap_or_else(|p| p.into_inner())

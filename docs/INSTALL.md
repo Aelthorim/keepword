@@ -125,9 +125,11 @@ address in `X-Forwarded-For`. The node uses the **last** address in that
 header, the one your proxy added. The installer turns on
 `network.trust_forwarded_for` when you pass `--domain`, because observation
 receipts, and with them every peer's corroborated location, depend on it.
-**Never** enable that setting with the API exposed directly, or clients can
-claim any address. Don't put a CDN in front of the API either: the node
-would record the CDN's addresses as its peers' locations.
+The node only takes the header from connections from this machine or a
+private network, so the proxy must run there: with the API exposed
+directly, clients could otherwise claim any address. Don't put a CDN in
+front of the API either: the node would record the CDN's addresses as its
+peers' locations.
 
 nginx:
 

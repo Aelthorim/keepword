@@ -115,11 +115,10 @@ pub fn corroborate(
 ) -> Option<Location> {
     let valid = observations
         .iter()
-        .filter(|o| o.body.subject == *subject && o.body.observer != *subject)
-        .filter(|o| o.verify().is_ok());
+        .filter(|o| o.body.subject == *subject && o.body.observer != *subject);
     if subject != me {
         return valid
-            .filter(|o| o.body.observer == *me)
+            .filter(|o| o.body.observer == *me && o.verify().is_ok())
             .find_map(|o| db.lookup(o.body.ip))
             .map(|(asn, country)| Location {
                 asn,
@@ -129,7 +128,7 @@ pub fn corroborate(
             });
     }
     let mut by_asn: BTreeMap<(u32, String), BTreeSet<u32>> = BTreeMap::new();
-    for o in valid {
+    for o in valid.filter(|o| o.verify().is_ok()) {
         let Some(loc) = db.lookup(o.body.ip) else {
             continue;
         };

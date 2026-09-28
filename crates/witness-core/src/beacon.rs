@@ -24,6 +24,10 @@ pub const QUICKNET_PERIOD: i64 = 3;
 /// One epoch of assignment lasts a day.
 pub const EPOCH_MS: i64 = 86_400_000;
 
+/// Clock skew allowed between a witness and drand: a capture may claim a
+/// time up to this much before the round its beacon was published.
+pub const SKEW_MS: i64 = 60_000;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Beacon {
     pub round: u64,
@@ -55,8 +59,12 @@ impl Beacon {
     }
 }
 
+/// Saturates instead of wrapping: rounds come from untrusted messages.
 pub fn round_time_ms(round: u64) -> i64 {
-    (QUICKNET_GENESIS + (round as i64 - 1) * QUICKNET_PERIOD) * 1000
+    let round = i64::try_from(round).unwrap_or(i64::MAX);
+    QUICKNET_GENESIS
+        .saturating_add(round.saturating_sub(1).saturating_mul(QUICKNET_PERIOD))
+        .saturating_mul(1000)
 }
 
 /// The first round published at or after `t_ms`.
@@ -134,6 +142,8 @@ pub(crate) mod tests {
             assert_eq!(round_at(round_time_ms(r) - 1000), r);
         }
         assert!(round_time_ms(epoch_round(20_000)) >= 20_000 * EPOCH_MS);
+        assert_eq!(round_time_ms(u64::MAX), i64::MAX);
+        assert_eq!(round_time_ms(1 << 62), i64::MAX);
     }
 
     #[test]

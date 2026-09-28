@@ -188,7 +188,8 @@ async fn four_witnesses() {
         Some(witness_core::bundle::Strength::Cosigned)
     );
 
-    // Pushes produced observation receipts, and they flooded.
+    // Pushes produced observation receipts: every node keeps its own of B,
+    // and B keeps the ones about it. They no longer flood.
     let b_key = nodes[1].node.key.public();
     for n in &nodes {
         let obs = n.node.store.observations_of(&b_key, 0).unwrap();

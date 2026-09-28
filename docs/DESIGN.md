@@ -324,6 +324,9 @@ minute) a node:
 1. exchanges gossip with a **random sample** of peers
    (`network.gossip_fanout`, 16): refreshes each one's descriptor, pulls
    its outbox, pushes its own and gets an observation receipt (§6.3).
+   Three quarters of the sample are peers that synced within a day, the
+   rest others, to find new peers and notice ones that are back, so keys
+   announcing endpoints nobody answers on can't crowd the working ones out.
    Messages still reach every node, over a few hops. The full peer list is
    only fetched while a node knows few peers, and daily from its bootstrap
    peers;
@@ -369,8 +372,9 @@ cosignature, which cost each node nodes² × rounds of storage: a few
 hundred MB a day at 20 witnesses, over a terabyte at 1000.
 
 Gossip messages (descriptors, watch requests and cancellations, tree heads,
-cosignatures, observations, alerts, equivocation proofs, drand beacons,
-TLSNotary receipts) are all signed statements with content-derived IDs.
+alerts, equivocation proofs, drand beacons, TLSNotary receipts) are all
+signed statements with content-derived IDs. (Cosignatures go to the log they
+cover, and observation receipts to the node they are about; neither floods.)
 They are deduplicated by ID, validated (signature, clock skew, rate
 limits), stored and forwarded. Message kinds a node doesn't know are
 skipped, not fatal, so nodes can be upgraded one at a time.
@@ -381,12 +385,24 @@ Keys cost nothing, so a node limits what strangers can make it store:
   message must be signed by a witness in the peer table (or by the node
   itself). The table is capped (`network.max_peers`), so flooding alerts,
   requests or receipts first means getting into it.
+- **Every key may only make a node take so much.** Getting into the peer
+  table is free, so a node takes at most an hour's worth of each kind of
+  message from one key: 10 descriptors or equivocation proofs, 60 tree
+  heads, 100 requests or cancellations, 200 of anything else, well above
+  what an honest witness sends. Keys the node has never synced with nor
+  seen push to it share 2000 messages an hour between them, except the
+  peer lists of its bootstrap peers. These checks come before any
+  signature is checked. Alerts dated ahead, which would never be pruned,
+  are refused.
 - **A full peer table evicts the least useful peer** to admit a new one
   with an endpoint: an equivocating log first, then peers without an
   endpoint, then peers that never synced within an hour of being learned
   or haven't synced for a day. Healthy peers are never evicted. Descriptors older than seven days are ignored.
 - **Beacons older than three days are refused.** Every historical drand
-  beacon verifies, and there are millions.
+  beacon verifies, and there are millions. Checking one is a BLS pairing,
+  milliseconds of CPU, and anyone may send them, so a node only checks a
+  beacon it can use (newer than any it holds, or a day's epoch seed it
+  lacks), at most 20 at once and one every three seconds after that.
 - Peers are synced eight at a time, and a peer whose last sync failed is
   retried after ten minutes, so dead peers can't stall a round.
 
@@ -399,7 +415,8 @@ unless `network.allow_private_peers` is set for a closed LAN network.
 Self-reported ASN is worthless on its own. Pushes carry a signed envelope
 (`from`, `to`, time, hash of the message IDs), protected against replay.
 The receiver answers with an **observation receipt**: "I saw key K connect
-from IP X at time T", which floods like any gossip. A verifier maps each IP
+from IP X at time T", which K keeps. Receipts don't flood: a node only uses
+its own receipts and the ones about itself (below). A verifier maps each IP
 to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
 `quorum.asn_db`).
 
@@ -455,9 +472,11 @@ witness per ASN and `max_per_country` per country, `replication` in total.
 The **epoch seed** is the drand quicknet beacon at the start of the UTC day,
 verified offline with BLS. Beacons also travel over gossip, so nodes
 without drand access can still use them. Only assigned witnesses add the
-URL to their watchlist; the watch disappears when the request expires or
-the assignment moves. Several requests for one URL share one watch at the
-shortest interval any of them asks for.
+URL to their watchlist, at their next sync; the watch disappears when the
+request expires or the assignment moves. Several requests for one URL share
+one watch at the shortest interval any of them asks for. Without an
+epoch's beacon nobody can tell who was assigned in it, so a verdict counts
+no attestation from that epoch rather than every one.
 
 A requester can withdraw a request with a signed **cancellation**
 (`witness request URL --cancel`). Nodes drop the request and remember the
@@ -701,6 +720,12 @@ before public operation. The design aims to leave room for compliance.
   within the lookback would exempt them, at the price of letting two
   colluding networks dispute forever; a per-URL backoff for rechecks would
   bound that.
+- **Many keys behind one server.** The per-key caps (§6.2) bound what one
+  key can make a node store, and keys with nothing behind them share one
+  budget. Keys whose endpoints all answer from one server still get a cap
+  each, and count as working peers when gossip picks whom to talk to.
+  Capping peers per network prefix of their endpoint (as failed claims are
+  counted per /24 and /48) would make each such key cost an address.
 - **Nodes without a public endpoint.** Nobody pushes to them, so they
   can't place other witnesses (§6.3) or compute verdicts. Recording where
   a node reached each peer's endpoint would give every node a first-hand

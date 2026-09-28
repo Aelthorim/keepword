@@ -46,6 +46,8 @@ pub struct Node {
     descriptor: Mutex<witness_core::statement::Signed<witness_core::net::Descriptor>>,
     seen_envelopes: Mutex<HashMap<Digest, i64>>,
     sched: Mutex<federation::Schedule>,
+    /// What others may still make this node store and check this hour.
+    limits: Mutex<federation::Limits>,
 }
 
 /// Result of one capture.
@@ -115,6 +117,7 @@ impl Node {
             descriptor: Mutex::new(placeholder),
             seen_envelopes: Mutex::new(HashMap::new()),
             sched: Mutex::new(Default::default()),
+            limits: Mutex::new(Default::default()),
         };
         node.descriptor = Mutex::new(node.build_descriptor()?);
         Ok(node)

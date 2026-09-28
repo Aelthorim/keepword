@@ -376,6 +376,25 @@ impl Gossip {
         )
     }
 
+    /// The key a message speaks for: the one receivers hold responsible for
+    /// it, in their peer checks and rate limits. `None` for beacons, which
+    /// anyone may pass on.
+    pub fn signer(&self) -> Option<WitnessKey> {
+        match self {
+            Gossip::Descriptor(d) => Some(d.body.key),
+            Gossip::Request(r) => Some(r.body.requester),
+            Gossip::Cancel(c) => Some(c.body.requester),
+            Gossip::Recheck(r) => Some(r.body.requester),
+            Gossip::TreeHead(h) => Some(h.head.log),
+            Gossip::Cosignature(c) => Some(c.body.cosigner),
+            Gossip::Observation(o) => Some(o.body.observer),
+            Gossip::Alert(a) => Some(a.body.issuer),
+            Gossip::Equivocation { a, .. } => Some(a.head.log),
+            Gossip::Beacon(_) => None,
+            Gossip::TlsnReceipt(r) => Some(r.body.verifier),
+        }
+    }
+
     /// Cryptographic validity only; policy checks (freshness, rate limits)
     /// are the receiver's business.
     pub fn verify(&self) -> Result<(), Error> {
