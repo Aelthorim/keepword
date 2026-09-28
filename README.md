@@ -33,7 +33,8 @@ fetches the IP-to-ASN table and refreshes it weekly, detects the node's
 network, and puts the peer API behind Caddy with automatic TLS. Re-run it to
 upgrade. There is also a container image (`Dockerfile`,
 `packaging/docker/compose.yaml`). Both are described in
-[docs/INSTALL.md](docs/INSTALL.md).
+[docs/INSTALL.md](docs/INSTALL.md). To start a network or join one, see
+[docs/NETWORK.md](docs/NETWORK.md).
 
 ## Quick start (from source)
 
@@ -99,16 +100,23 @@ VERIFIED
 | `log head\|consistency OLD [NEW]\|audit` | Tree head, consistency proofs, full self-audit |
 | `purge URL [--forget]` | Erase stored content (and records); the log stays valid |
 | `serve [--addr A] [--api-addr B] [--watch] [--anchor]` | Web UI (private), peer API (public), scheduler, federation and anchoring loops |
-| `net add-peer URL\|peers\|sync\|status\|lookup IP` | Federation with other witnesses; IP-to-ASN lookups |
-| `request URL [--every 1h] [--for 7days]` | Ask the network to watch a URL |
+| `net add-peer URL\|remove-peer KEY\|peers\|sync\|status\|lookup IP` | Federation with other witnesses; `status` warns about misconfiguration |
+| `request URL [--every 1h] [--for 7days]` / `request URL --cancel` | Ask the network to watch a URL (asking again replaces the request), or withdraw it |
+| `requests [--mine]` | Active network watch requests |
 | `verdict URL` | What independent witnesses agree the URL served |
-| `alerts` | Cloaking, silent-edit and equivocation alerts |
+| `alerts` | Split, silent-edit and equivocation alerts |
 | `anchor submit\|upgrade\|list\|export` | Bitcoin anchoring via OpenTimestamps |
 | `beacon [ROUND]` | Fetch and verify a drand beacon |
 | `config show\|get\|set\|unset` | Read or change `witness.toml`, with validation |
 
 `--at` takes RFC 3339 or `YYYY-MM-DD` (end of that day, UTC). IDs can be
 abbreviated. `--json` gives machine-readable output.
+
+The node's data directory is `--dir` or `WITNESS_DIR` if given, else
+`./witness-data` if it exists, else the node the installer set up
+(`/var/lib/witness`). Run as root, `witness` switches to the owner of that
+directory, the service user, before doing anything, so `sudo witness …`
+just works on an installed node.
 
 ## Configuration
 
@@ -166,8 +174,9 @@ witness capture --render https://example.org/app
 ```
 
 This needs Chrome or Chromium; set `capture.chrome` if it isn't on `PATH`.
-The browser resolves hosts itself, so the private-address guard doesn't
-cover rendered sub-resources. Only render URLs you chose.
+The browser resolves hosts itself, so the private-address guard only covers
+the page's own address, not its sub-resources. Only render URLs you chose;
+network requests are rendered only with `network.render_requests`.
 
 ## Layout
 
@@ -180,6 +189,7 @@ crates/witness-node       the `witness` binary: CLI, peer API, federation, web U
 crates/witness-tlsn       TLSNotary proof tier (separate workspace)
 docs/DESIGN.md            threat model, formats, network design, roadmap
 docs/INSTALL.md           production installation (installer, container)
+docs/NETWORK.md           starting or joining a public witness network
 scripts/install.sh        the installer
 packaging/docker/         container entrypoint and compose file
 ```
@@ -197,8 +207,9 @@ Integration tests run everything over real HTTP on localhost:
 - `e2e.rs`: the single-node lifecycle (capture, noise, silent and disclosed
   edits, bundles, tampering, redirects, audit, erasure)
 - `network.rs`: four witnesses in four ASNs (discovery, log mirroring,
-  cosigning, observation receipts, assigned watch requests, a cloaking
-  server producing a split verdict and alert, equivocation detection)
+  cosigning, observation receipts, assigned watch requests, replacing and
+  withdrawing them, dropping gossip from strangers, a cloaking server
+  producing a split verdict and alert, equivocation detection)
 - `anchoring.rs`: drand beacons and Bitcoin anchoring against mock drand,
   OpenTimestamps and Esplora services
 - `witness-normalize/tests/corpus.rs`: the normalizer regression corpus

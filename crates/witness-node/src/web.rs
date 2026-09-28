@@ -487,7 +487,7 @@ fn verdict_html(v: &crate::consensus::VerdictView) -> String {
             }
         }
         Verdict::Split { groups } => {
-            b.push_str("<p class=silent>Split: independent witnesses saw different content at the same time. The server treats clients differently (cloaking, geo-targeting or an A/B test).</p>");
+            b.push_str("<p class=silent>Split: independent witnesses saw different content at the same time, so the server treats visitors differently. Often harmless (localization, an A/B test, a rollout in progress, bot blocking); compare the versions before concluding it is cloaking.</p>");
             b.push_str(&group_rows(groups));
         }
         Verdict::Insufficient { groups } => {
@@ -580,7 +580,7 @@ async fn alerts_page(State(node): State<Arc<Node>>) -> WebResult<Html<String>> {
     b.push_str("<div class=wrap><table><tr><th>When</th><th>Kind</th><th>URL</th><th>Summary</th><th>From</th></tr>");
     for a in alerts {
         let kind = match a.body.kind {
-            witness_core::net::AlertKind::Split => "cloaking",
+            witness_core::net::AlertKind::Split => "split",
             witness_core::net::AlertKind::SilentEdit => "silent edit",
             witness_core::net::AlertKind::Equivocation => "equivocation",
         };

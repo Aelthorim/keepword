@@ -66,7 +66,7 @@ fn parse_id(s: &str) -> Result<Digest, ApiError> {
 }
 
 async fn descriptor(State(node): State<Arc<Node>>) -> Json<Signed<Descriptor>> {
-    Json(node.descriptor.clone())
+    Json(node.descriptor())
 }
 
 async fn peers(State(node): State<Arc<Node>>) -> ApiResult<Vec<Signed<Descriptor>>> {
@@ -164,18 +164,8 @@ async fn attestations(
 }
 
 fn content_allowed(node: &Node, url: &str) -> bool {
-    let Some(host) = url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-    else {
-        return false;
-    };
-    node.config
-        .network
-        .serve_content_hosts
-        .iter()
-        .map(|h| h.trim_start_matches('.').to_ascii_lowercase())
-        .any(|h| host == h || host.ends_with(&format!(".{h}")))
+    url::Url::parse(url)
+        .is_ok_and(|u| crate::host_listed(&node.config.network.serve_content_hosts, &u))
 }
 
 async fn bundle(
@@ -224,7 +214,9 @@ fn client_ip(node: &Node, addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
         if let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
+            // The proxy appends the address it saw; anything before it
+            // came from the client and can be forged.
+            .and_then(|v| v.rsplit(',').next())
             .and_then(|v| v.trim().parse().ok())
         {
             return ip;

@@ -132,6 +132,32 @@ CREATE TABLE reputation (
 );
 "#;
 
+pub(crate) const SCHEMA_V3: &str = r#"
+-- When a peer last synced without error, for evicting dead peers.
+ALTER TABLE peers ADD COLUMN last_ok INTEGER;
+
+-- Requests their requester withdrew. Kept until the request would have
+-- expired, so a peer re-sending it can't bring it back.
+CREATE TABLE request_cancels (
+    request    BLOB NOT NULL,
+    requester  BLOB NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (request, requester)
+);
+"#;
+
+/// What this node captures for the active requests on one URL: the
+/// shortest interval and the latest expiry among them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestWatch {
+    pub url: String,
+    pub every_secs: u64,
+    pub render: bool,
+    /// One of the requests, for display.
+    pub request: Digest,
+    pub expires_at_ms: i64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Peer {
     pub key: WitnessKey,
@@ -140,6 +166,8 @@ pub struct Peer {
     pub first_seen: i64,
     pub last_sync: Option<i64>,
     pub last_error: Option<String>,
+    /// Last sync without error.
+    pub last_ok: Option<i64>,
     pub pushed_seq: i64,
     pub pulled_seq: i64,
     pub head: Option<SignedTreeHead>,
@@ -188,7 +216,7 @@ impl Store {
     fn peer_rows(&self, filter: &str, p: impl rusqlite::Params) -> Result<Vec<Peer>> {
         let db = self.db();
         let mut st = db.prepare(&format!(
-            "SELECT key, descriptor, endpoint, first_seen, last_sync, last_error, pushed_seq, pulled_seq, head
+            "SELECT key, descriptor, endpoint, first_seen, last_sync, last_error, pushed_seq, pulled_seq, head, last_ok
              FROM peers {filter} ORDER BY first_seen, key"
         ))?;
         let rows = st.query_map(p, |r| {
@@ -202,11 +230,22 @@ impl Store {
                 r.get::<_, i64>(6)?,
                 r.get::<_, i64>(7)?,
                 r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<i64>>(9)?,
             ))
         })?;
         rows.map(|row| {
-            let (k, d, endpoint, first_seen, last_sync, last_error, pushed_seq, pulled_seq, head) =
-                row?;
+            let (
+                k,
+                d,
+                endpoint,
+                first_seen,
+                last_sync,
+                last_error,
+                pushed_seq,
+                pulled_seq,
+                head,
+                last_ok,
+            ) = row?;
             Ok(Peer {
                 key: key_of(&k).ok_or_else(|| StoreError::Corrupt("peer key".into()))?,
                 descriptor: json(&d)?,
@@ -214,6 +253,7 @@ impl Store {
                 first_seen,
                 last_sync,
                 last_error,
+                last_ok,
                 pushed_seq,
                 pulled_seq,
                 head: head.as_deref().map(json).transpose()?,
@@ -232,10 +272,42 @@ impl Store {
 
     pub fn peer_mark_sync(&self, key: &WitnessKey, at_ms: i64, error: Option<&str>) -> Result<()> {
         self.db().execute(
-            "UPDATE peers SET last_sync = ?2, last_error = ?3 WHERE key = ?1",
+            "UPDATE peers SET last_sync = ?2, last_error = ?3,
+                last_ok = CASE WHEN ?3 IS NULL THEN ?2 ELSE last_ok END
+             WHERE key = ?1",
             params![key.0.as_slice(), at_ms, error],
         )?;
         Ok(())
+    }
+
+    /// Make room in a full peer table by dropping the least useful peer:
+    /// one that equivocated, has no endpoint, or hasn't synced in a day
+    /// (or ever, an hour after we learned of it). Its mirrored log is kept,
+    /// so it is re-checked for consistency if it comes back. Returns
+    /// whether a peer was dropped.
+    pub fn peer_evict_one(&self, now_ms: i64) -> Result<bool> {
+        let n = self.db().execute(
+            "DELETE FROM peers WHERE key = (
+                SELECT key FROM peers
+                WHERE key IN (SELECT log FROM equivocations)
+                   OR endpoint IS NULL
+                   OR (last_ok IS NULL AND first_seen < ?1)
+                   OR last_ok < ?2
+                ORDER BY key IN (SELECT log FROM equivocations) DESC,
+                         endpoint IS NULL DESC,
+                         COALESCE(last_ok, first_seen)
+                LIMIT 1)",
+            params![now_ms - 3_600_000, now_ms - 86_400_000],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Forget a peer. Its mirrored log is kept (see `peer_evict_one`).
+    pub fn peer_remove(&self, key: &WitnessKey) -> Result<bool> {
+        Ok(self
+            .db()
+            .execute("DELETE FROM peers WHERE key = ?1", [key.0.as_slice()])?
+            > 0)
     }
 
     pub fn peer_set_cursors(
@@ -396,10 +468,15 @@ impl Store {
     /// Forget messages older than `before_ms`. Their IDs are forgotten too,
     /// so a very late duplicate would be accepted once more; receivers
     /// dedupe by content anyway.
-    pub fn gossip_prune(&self, before_ms: i64) -> Result<usize> {
-        Ok(self
-            .db()
-            .execute("DELETE FROM gossip WHERE received_at < ?1", [before_ms])?)
+    /// Drop old messages from the outbox. Requests and cancellations are
+    /// kept until `requests_before_ms`, since a request can run for weeks
+    /// and witnesses joining later still need to hear of it.
+    pub fn gossip_prune(&self, before_ms: i64, requests_before_ms: i64) -> Result<usize> {
+        Ok(self.db().execute(
+            "DELETE FROM gossip WHERE received_at < ?2
+                OR (received_at < ?1 AND kind NOT IN ('request', 'cancel'))",
+            params![before_ms, requests_before_ms],
+        )?)
     }
 
     // ---------------------------------------------------------- requests
@@ -433,28 +510,85 @@ impl Store {
         )? as u64)
     }
 
-    pub fn requests_prune(&self, now_ms: i64) -> Result<usize> {
-        Ok(self
-            .db()
-            .execute("DELETE FROM requests WHERE expires_at <= ?1", [now_ms])?)
+    pub fn request(&self, id: &Digest) -> Result<Option<Signed<WatchRequest>>> {
+        let db = self.db();
+        let mut st = db.prepare("SELECT json FROM requests WHERE id = ?1")?;
+        let mut rows = st.query_map([id.as_bytes()], |r| r.get::<_, String>(0))?;
+        rows.next().transpose()?.map(|j| json(&j)).transpose()
     }
 
-    /// Add a watch on behalf of a request. A user's own watch on the same
-    /// URL takes precedence and is left alone.
-    pub fn watch_for_request(&self, r: &Signed<WatchRequest>, now_ms: i64) -> Result<()> {
+    pub fn requests_by(
+        &self,
+        requester: &WitnessKey,
+        now_ms: i64,
+    ) -> Result<Vec<Signed<WatchRequest>>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT json FROM requests WHERE requester = ?1 AND expires_at > ?2 ORDER BY url",
+        )?;
+        let rows = st.query_map(params![requester.0.as_slice(), now_ms], |r| {
+            r.get::<_, String>(0)
+        })?;
+        rows.map(|j| json(&j?)).collect()
+    }
+
+    pub fn requests_prune(&self, now_ms: i64) -> Result<usize> {
+        let db = self.db();
+        db.execute(
+            "DELETE FROM request_cancels WHERE expires_at <= ?1",
+            [now_ms],
+        )?;
+        Ok(db.execute("DELETE FROM requests WHERE expires_at <= ?1", [now_ms])?)
+    }
+
+    /// Record that `requester` withdrew request `id`, and drop the request
+    /// if we hold it and it is theirs. Returns true if the cancellation is
+    /// new.
+    pub fn request_cancel(
+        &self,
+        id: &Digest,
+        requester: &WitnessKey,
+        expires_at_ms: i64,
+    ) -> Result<bool> {
+        let db = self.db();
+        let n = db.execute(
+            "INSERT OR IGNORE INTO request_cancels (request, requester, expires_at) VALUES (?1, ?2, ?3)",
+            params![id.as_bytes(), requester.0.as_slice(), expires_at_ms],
+        )?;
+        db.execute(
+            "DELETE FROM requests WHERE id = ?1 AND requester = ?2",
+            params![id.as_bytes(), requester.0.as_slice()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Whether `requester` withdrew request `id`.
+    pub fn request_cancelled(&self, id: &Digest, requester: &WitnessKey) -> Result<bool> {
+        Ok(self.db().query_row(
+            "SELECT COUNT(*) FROM request_cancels WHERE request = ?1 AND requester = ?2",
+            params![id.as_bytes(), requester.0.as_slice()],
+            |r| r.get::<_, i64>(0),
+        )? > 0)
+    }
+
+    /// Add or update the watch that serves the network's requests for a
+    /// URL. A user's own watch on the same URL takes precedence and is left
+    /// alone.
+    pub fn watch_for_request(&self, w: &RequestWatch, now_ms: i64) -> Result<()> {
         self.db().execute(
             "INSERT INTO watch (url, every_secs, render, added_at, request_id, expires_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(url) DO UPDATE SET every_secs = MIN(watch.every_secs, excluded.every_secs),
-                expires_at = MAX(watch.expires_at, excluded.expires_at)
+             ON CONFLICT(url) DO UPDATE SET every_secs = excluded.every_secs,
+                render = excluded.render, request_id = excluded.request_id,
+                expires_at = excluded.expires_at
              WHERE watch.request_id IS NOT NULL",
             params![
-                r.body.url,
-                r.body.every_secs as i64,
-                r.body.render,
+                w.url,
+                w.every_secs as i64,
+                w.render,
                 now_ms,
-                r.id().as_bytes(),
-                r.body.expires_at_ms
+                w.request.as_bytes(),
+                w.expires_at_ms
             ],
         )?;
         Ok(())
@@ -781,5 +915,89 @@ impl Store {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use witness_core::Keypair;
+    use witness_core::net::Descriptor;
+
+    fn peer(s: &Store, endpoint: Option<&str>, now: i64) -> WitnessKey {
+        let kp = Keypair::generate().unwrap();
+        let d = Signed::sign(
+            Descriptor {
+                key: kp.public(),
+                endpoint: endpoint.map(str::to_string),
+                vantage: Default::default(),
+                issued_at_ms: now,
+                software: "t".into(),
+            },
+            &kp,
+        )
+        .unwrap();
+        s.peer_upsert(&d, now).unwrap();
+        kp.public()
+    }
+
+    #[test]
+    fn evicts_the_least_useful_peer() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::open(t.path()).unwrap();
+        let hour = 3_600_000;
+        let now = 100 * hour;
+        let healthy = peer(&s, Some("https://a.example"), now - 50 * hour);
+        s.peer_mark_sync(&healthy, now - hour, None).unwrap();
+        let fresh = peer(&s, Some("https://b.example"), now);
+        // Nothing to evict: one peer is healthy, the other brand new.
+        assert!(!s.peer_evict_one(now).unwrap());
+
+        let dead = peer(&s, Some("https://c.example"), now - 2 * hour);
+        s.peer_mark_sync(&dead, now - hour, Some("connection refused"))
+            .unwrap();
+        let hidden = peer(&s, None, now);
+        // Endpoint-less peers go first, then ones that never synced.
+        assert!(s.peer_evict_one(now).unwrap());
+        assert!(s.peer(&hidden).unwrap().is_none());
+        assert!(s.peer_evict_one(now).unwrap());
+        assert!(s.peer(&dead).unwrap().is_none());
+        assert!(!s.peer_evict_one(now).unwrap());
+        assert!(s.peer(&healthy).unwrap().is_some());
+        assert!(s.peer(&fresh).unwrap().is_some());
+        // A peer that stopped answering a day ago is evictable too.
+        assert!(s.peer_evict_one(now + 30 * hour).unwrap());
+    }
+
+    #[test]
+    fn cancellations_outlive_the_request_row() {
+        let t = tempfile::tempdir().unwrap();
+        let s = Store::open(t.path()).unwrap();
+        let kp = Keypair::generate().unwrap();
+        let other = Keypair::generate().unwrap();
+        let r = Signed::sign(
+            WatchRequest {
+                url: "https://a.example/".into(),
+                every_secs: 600,
+                render: false,
+                requester: kp.public(),
+                issued_at_ms: 0,
+                expires_at_ms: 1000,
+            },
+            &kp,
+        )
+        .unwrap();
+        s.request_insert(&r).unwrap();
+        // Someone else's cancellation doesn't touch it.
+        s.request_cancel(&r.id(), &other.public(), 1000).unwrap();
+        assert_eq!(s.requests_active(0).unwrap().len(), 1);
+        assert!(!s.request_cancelled(&r.id(), &kp.public()).unwrap());
+
+        assert!(s.request_cancel(&r.id(), &kp.public(), 1000).unwrap());
+        assert!(!s.request_cancel(&r.id(), &kp.public(), 1000).unwrap());
+        assert!(s.requests_active(0).unwrap().is_empty());
+        assert!(s.request_cancelled(&r.id(), &kp.public()).unwrap());
+        s.requests_prune(1000).unwrap();
+        assert!(!s.request_cancelled(&r.id(), &kp.public()).unwrap());
     }
 }

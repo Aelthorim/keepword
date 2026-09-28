@@ -23,13 +23,15 @@ jobs:
         run: |
           systemctl is-active witness
           curl -fsS http://127.0.0.1:8481/v1/descriptor
-          sudo -u witness WITNESS_DIR=/var/lib/witness witness net status
+          sudo witness net status               # no alias: it becomes the witness user
+          sudo witness watch add https://example.org/ --every 6h
+          test "$(sudo stat -c %U /var/lib/witness/index.sqlite)" = witness
           sudo test -s /var/lib/witness/ip2asn-combined.tsv   # data dir is 0750
           systemctl is-enabled witness-asn-update.timer
           systemd-analyze security witness.service --no-pager | tail -n 1
       - name: Upgrade keeps the key
         run: |
-          key() { sudo -u witness WITNESS_DIR=/var/lib/witness witness id | awk '/witness key/ {print $3}'; }
+          key() { sudo witness id | awk '/witness key/ {print $3}'; }
           before=$(key)
           sudo sh scripts/install.sh --source . --yes --retain normalized
           test "$before" = "$(key)"

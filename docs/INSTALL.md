@@ -83,12 +83,17 @@ executable (except with `--render`, because Chromium's JIT needs it).
 
 ### Day-to-day
 
-Run CLI commands as the service user so file ownership stays right:
+Run `witness` as root or with sudo. It finds the installed node by itself
+and switches to the `witness` user before touching anything, so file
+ownership stays right. No alias or `WITNESS_DIR` is needed. As an ordinary
+user it tells you to use sudo, since the data directory is private to the
+service.
 
 ```sh
-alias witness='sudo -u witness WITNESS_DIR=/var/lib/witness witness'
 witness watch add https://example.org/terms --every 6h
-witness net status
+witness request https://example.org/terms --every 1h --for 7days   # the network watches it
+witness request https://example.org/terms --cancel
+witness net status                     # ends with warnings about anything misconfigured
 witness config show
 witness config set network.peers '["https://witness.one.example"]'
 sudo systemctl restart witness         # after changing the config
@@ -98,6 +103,8 @@ journalctl -u witness -f
 The web UI shows captured content, so it only listens on localhost. View it
 with an SSH tunnel: `ssh -L 8480:127.0.0.1:8480 your-server`, then open
 http://localhost:8480.
+
+To start a network or join one, see [NETWORK.md](NETWORK.md).
 
 **Back up `/var/lib/witness/witness.key`.** It is the witness's identity, and
 the log is only verifiable against it. A new key is a new witness.
@@ -113,12 +120,14 @@ the log is only verifiable against it. A new key is a new witness.
 
 ### Your own reverse proxy
 
-The proxy must forward `/v1/` to `127.0.0.1:8481` and set `X-Forwarded-For`
-to the real client address. The installer turns on
+The proxy must forward `/v1/` to `127.0.0.1:8481` and put the real client
+address in `X-Forwarded-For`. The node uses the **last** address in that
+header, the one your proxy added. The installer turns on
 `network.trust_forwarded_for` when you pass `--domain`, because observation
 receipts, and with them every peer's corroborated location, depend on it.
 **Never** enable that setting with the API exposed directly, or clients can
-claim any address.
+claim any address. Don't put a CDN in front of the API either: the node
+would record the CDN's addresses as its peers' locations.
 
 nginx:
 

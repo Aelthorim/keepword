@@ -23,6 +23,7 @@ witness-store.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+futures = "0.3"
 hex.workspace = true
 humantime.workspace = true
 libc = "0.2"

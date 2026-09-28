@@ -63,6 +63,7 @@ async fn spawn(asn: u32, country: &str, ua: &str, peers: Vec<String>) -> TestNod
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let mut cfg = Config::default();
     cfg.capture.allow_private_addresses = true;
+    cfg.network.allow_private_peers = true;
     cfg.capture.user_agent = Some(ua.into());
     cfg.vantage.asn = Some(asn);
     cfg.vantage.country = Some(country.into());
@@ -152,7 +153,7 @@ async fn four_witnesses() {
     // A watch request: exactly three witnesses get assigned, capture, and
     // the network agrees.
     let requested = format!("{site}/page/two");
-    nodes[0]
+    let first = nodes[0]
         .node
         .request_watch(&requested, 600, 86_400_000, false)
         .unwrap();
@@ -175,6 +176,62 @@ async fn four_witnesses() {
     for n in &nodes {
         assert_eq!(n.node.verdict(&requested).unwrap().considered, 3);
     }
+
+    // Replacing a request: a slower interval takes effect, which it
+    // couldn't while the old request was still active.
+    let request_watches =
+        |every: u64| {
+            nodes
+                .iter()
+                .filter(|n| {
+                    n.node.store.watches().unwrap().iter().any(|w| {
+                        w.url == requested && w.request_id.is_some() && w.every_secs == every
+                    })
+                })
+                .count()
+        };
+    assert_eq!(nodes[0].node.cancel_requests(&requested).unwrap(), 1);
+    nodes[0]
+        .node
+        .request_watch(&requested, 1200, 86_400_000, false)
+        .unwrap();
+    sync_all(&nodes, 2).await;
+    assert_eq!(request_watches(1200), 3);
+    assert_eq!(request_watches(600), 0);
+
+    // Withdrawing it: every assigned witness stops, and the original
+    // request can't be replayed.
+    assert_eq!(nodes[0].node.cancel_requests(&requested).unwrap(), 1);
+    assert_eq!(nodes[0].node.cancel_requests(&requested).unwrap(), 0);
+    sync_all(&nodes, 2).await;
+    assert_eq!(request_watches(1200), 0);
+    for n in &nodes {
+        n.node.store.gossip_prune(i64::MAX, i64::MAX).unwrap();
+        assert!(!n.node.ingest(Gossip::Request(first.clone())).unwrap());
+        assert!(
+            n.node
+                .store
+                .requests_active(witness_core::now_ms())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    // Gossip from a key outside the peer table is dropped.
+    let stranger = witness_core::Keypair::generate().unwrap();
+    let fake = witness_core::statement::Signed::sign(
+        witness_core::net::Alert {
+            kind: AlertKind::Split,
+            url: Some(requested.clone()),
+            summary: "noise".into(),
+            evidence: vec![],
+            issued_at_ms: witness_core::now_ms(),
+            issuer: stranger.public(),
+        },
+        &stranger,
+    )
+    .unwrap();
+    assert!(!nodes[1].node.ingest(Gossip::Alert(fake)).unwrap());
 
     // Cloaking: everyone captures the same URL; C and D get another page.
     let cloaked = format!("{site}/page/three");

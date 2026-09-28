@@ -31,7 +31,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE attestations (
@@ -153,14 +153,17 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
-            0 => {
-                conn.execute_batch(SCHEMA)?;
-                conn.execute_batch(net::SCHEMA_V2)?;
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            1 => {
-                conn.execute_batch(net::SCHEMA_V2)?;
-                conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            0..=2 => {
+                let tx = conn.unchecked_transaction()?;
+                if v == 0 {
+                    tx.execute_batch(SCHEMA)?;
+                }
+                if v <= 1 {
+                    tx.execute_batch(net::SCHEMA_V2)?;
+                }
+                tx.execute_batch(net::SCHEMA_V3)?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
             }
             SCHEMA_VERSION => {}
             other => {
@@ -672,9 +675,27 @@ mod tests {
         assert_eq!(w.len(), 1);
         assert!(w[0].request_id.is_none());
         assert!(s.peers().unwrap().is_empty());
+        assert!(
+            !s.request_cancelled(&Digest::of(b"r"), &Keypair::generate().unwrap().public())
+                .unwrap()
+        );
         drop(s);
         // Opening again is a no-op.
         Store::open(t.path()).unwrap();
+    }
+
+    #[test]
+    fn migrates_v2_databases() {
+        let t = tempfile::tempdir().unwrap();
+        {
+            let c = Connection::open(t.path().join("index.sqlite")).unwrap();
+            c.execute_batch(SCHEMA).unwrap();
+            c.execute_batch(net::SCHEMA_V2).unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let s = Store::open(t.path()).unwrap();
+        assert!(s.peers().unwrap().is_empty());
+        assert!(!s.peer_evict_one(0).unwrap());
     }
 
     #[test]

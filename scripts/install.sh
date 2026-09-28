@@ -237,7 +237,8 @@ if [ "$UNINSTALL" -eq 1 ]; then
         /etc/init.d/witness /etc/init.d/witness-notary /etc/periodic/weekly/witness-asn-update \
         /etc/cron.weekly/witness-asn-update
     [ "$LIVE_INIT" -eq 0 ] || [ "$INIT" != "systemd" ] || systemctl daemon-reload
-    rm -f "$BIN/witness" "$BIN/witness-tlsn"
+    rm -f "$BIN/witness" "$BIN/witness-tlsn" /etc/witness/data-dir
+    rmdir /etc/witness 2>/dev/null || true
     rm -rf "$LIBEXEC"
     if [ -f /etc/caddy/witness.caddy ]; then
         rm -f /etc/caddy/witness.caddy
@@ -442,6 +443,14 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     info "created system user $SVC_USER"
 fi
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
+# The CLI finds /var/lib/witness by itself; anywhere else is recorded here.
+if [ "$DATA_DIR" = /var/lib/witness ]; then
+    rm -f /etc/witness/data-dir
+    rmdir /etc/witness 2>/dev/null || true
+else
+    install -d /etc/witness
+    printf '%s\n' "$DATA_DIR" >/etc/witness/data-dir
+fi
 
 # Helper for refreshing the IP-to-ASN table, used now and by the timer.
 install -d "$LIBEXEC"
@@ -518,9 +527,17 @@ if [ -n "$PEERS" ]; then
     witness config set network.peers "[$list]"
     info "bootstrap peers:$PEERS"
 fi
-if [ -z "$(witness config get network.endpoint)" ] && [ -z "$PEERS" ] && [ "$UPGRADE" -eq 0 ]; then
-    info "standalone node (no endpoint or peers); add them later with"
-    info "  witness config set network.endpoint https://your.domain"
+if [ -z "$(witness config get network.endpoint)" ]; then
+    if [ -n "$PUBLIC_API" ]; then
+        warn "the API listens on $PUBLIC_API, but no endpoint is advertised, so peers"
+        warn "can't mirror this node and it is never assigned requests. Re-run with"
+        warn "  --endpoint https://your.domain:${PUBLIC_API##*:}   (public network)"
+        warn "  --endpoint http://this-node-ip:${PUBLIC_API##*:}   (private test network)"
+    elif [ -z "$PEERS" ] && [ "$UPGRADE" -eq 0 ]; then
+        info "standalone node (no endpoint or peers); join a network later with"
+        info "  witness config set network.endpoint https://your.domain"
+        info "  witness config set network.peers '[\"https://a.peer.example\"]'"
+    fi
 fi
 if [ "$RENDER" -eq 1 ]; then
     for c in chromium chromium-browser google-chrome; do
@@ -782,8 +799,9 @@ EOF
 cat <<EOF
 
     Next steps:
+      witness net status          (lists anything keeping this node out of the network)
       witness watch add https://example.org/terms --every 6h
-      witness net status
       witness config show
-    ${DIM}(run witness commands as the service user: sudo -u $SVC_USER WITNESS_DIR=$DATA_DIR witness …)${RESET}
+    Starting or joining a network: docs/NETWORK.md
+    ${DIM}(run witness commands as root or with sudo; they switch to the $SVC_USER user by themselves)${RESET}
 EOF

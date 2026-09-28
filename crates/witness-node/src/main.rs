@@ -17,14 +17,11 @@ use witness_normalize::diff;
     about = "Independent, verifiable records of what web pages said"
 )]
 struct Cli {
-    /// Node data directory.
-    #[arg(
-        long,
-        global = true,
-        env = "WITNESS_DIR",
-        default_value = "./witness-data"
-    )]
-    dir: PathBuf,
+    /// Node data directory. Default: ./witness-data if it exists, else the
+    /// node set up by the installer (/var/lib/witness). Run as root, the
+    /// command switches to the directory's owner, the service user.
+    #[arg(long, global = true, env = "WITNESS_DIR")]
+    dir: Option<PathBuf>,
     /// Print machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
@@ -132,8 +129,12 @@ enum Cmd {
         cmd: NetCmd,
     },
     /// Ask the network to watch a URL; assigned witnesses capture it.
+    /// Asking again for the same URL replaces your earlier request.
     Request {
         url: String,
+        /// Withdraw your requests for this URL instead.
+        #[arg(long, conflicts_with_all = ["every", "duration", "render"])]
+        cancel: bool,
         #[arg(long, default_value = "1h", value_parser = humantime::parse_duration)]
         every: Duration,
         /// How long the request stays active (at most 30 days).
@@ -141,6 +142,12 @@ enum Cmd {
         duration: Duration,
         #[arg(long)]
         render: bool,
+    },
+    /// Active network watch requests.
+    Requests {
+        /// Only this node's own.
+        #[arg(long)]
+        mine: bool,
     },
     /// What independent witnesses agree a URL served.
     Verdict { url: String },
@@ -185,6 +192,12 @@ enum NetCmd {
     AddPeer { url: String },
     /// List known peers.
     Peers,
+    /// Forget a peer, e.g. a test node that no longer exists. A live peer
+    /// comes back through gossip.
+    RemovePeer {
+        /// Key (or a prefix of it) or endpoint URL.
+        peer: String,
+    },
     /// Run one federation round now.
     Sync,
     /// Summary of this node's view of the network.
@@ -255,15 +268,25 @@ fn parse_retain(s: &str) -> Result<Retain, String> {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     // Exit quietly when piped into `head` and the like.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
-    match run(cli).await {
+    // `init` creates a node, so it never picks the installed one by itself.
+    let dir = match (&cli.cmd, &cli.dir) {
+        (Cmd::Init { .. }, None) => PathBuf::from(witness_node::sysdir::LOCAL_DIR),
+        _ => witness_node::sysdir::resolve(cli.dir.clone()),
+    };
+    // Before the runtime starts any threads.
+    let result = witness_node::sysdir::become_owner(&dir).and_then(|()| {
+        tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(run(cli, dir)))
+    });
+    match result {
         Ok(true) => {}
         Ok(false) => std::process::exit(1),
         Err(e) => {
@@ -283,8 +306,7 @@ fn at_ms(at: &Option<String>) -> Result<Option<i64>> {
 }
 
 /// Returns Ok(false) when a verification failed.
-async fn run(cli: Cli) -> Result<bool> {
-    let dir = cli.dir.clone();
+async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
     match cli.cmd {
         Cmd::Init {
             asn,
@@ -638,6 +660,44 @@ async fn run(cli: Cli) -> Result<bool> {
                         d.body.endpoint.unwrap_or_default()
                     );
                 }
+                NetCmd::RemovePeer { peer } => {
+                    let want = peer.trim_end_matches('/').to_ascii_lowercase();
+                    let matches: Vec<_> = node
+                        .store
+                        .peers()?
+                        .into_iter()
+                        .filter(|p| {
+                            p.key.to_hex().starts_with(&want)
+                                || p.endpoint.as_deref().is_some_and(|e| {
+                                    e.trim_end_matches('/').eq_ignore_ascii_case(&want)
+                                })
+                        })
+                        .collect();
+                    match matches.as_slice() {
+                        [] => bail!("no peer matches {peer:?}"),
+                        [p] => {
+                            node.store.peer_remove(&p.key)?;
+                            println!(
+                                "removed {} {}",
+                                p.key.short(),
+                                p.endpoint.as_deref().unwrap_or("")
+                            );
+                            if node.config.network.peers.iter().any(|b| {
+                                p.endpoint.as_deref().is_some_and(|e| {
+                                    e.trim_end_matches('/') == b.trim_end_matches('/')
+                                })
+                            }) {
+                                println!(
+                                    "note: it is in network.peers and will be re-added while it answers"
+                                );
+                            }
+                        }
+                        _ => bail!(
+                            "{peer:?} matches {} peers; give more of the key",
+                            matches.len()
+                        ),
+                    }
+                }
                 NetCmd::Peers => {
                     let peers = node.store.peers()?;
                     if cli.json {
@@ -706,7 +766,8 @@ async fn run(cli: Cli) -> Result<bool> {
                     );
                     println!(
                         "location    {}",
-                        me.map(|l| l.to_string())
+                        me.as_ref()
+                            .map(|l| l.to_string())
                             .unwrap_or_else(|| "not corroborated".into())
                     );
                     println!("peers       {}", node.store.peers()?.len());
@@ -732,6 +793,14 @@ async fn run(cli: Cli) -> Result<bool> {
                         "mirrored    {} attestations from peers",
                         node.store.foreign_count()?
                     );
+                    println!(
+                        "capturing   {} URLs for the network",
+                        node.store
+                            .watches()?
+                            .iter()
+                            .filter(|w| w.request_id.is_some())
+                            .count()
+                    );
                     let bad = node.store.equivocating_logs()?;
                     if !bad.is_empty() {
                         println!(
@@ -739,7 +808,67 @@ async fn run(cli: Cli) -> Result<bool> {
                             bad.iter().map(|k| k.short()).collect::<Vec<_>>().join(", ")
                         );
                     }
+                    let warnings = status_warnings(&node, me.is_some())?;
+                    if !warnings.is_empty() {
+                        println!();
+                        for w in warnings {
+                            println!("warning: {w}");
+                        }
+                    }
                 }
+            }
+        }
+        Cmd::Request {
+            url, cancel: true, ..
+        } => {
+            let node = Node::open(&dir)?;
+            match node.cancel_requests(&url)? {
+                0 => bail!("you have no active request for {url}"),
+                n => println!(
+                    "withdrew {n} request{}; assigned witnesses stop after the next sync",
+                    if n == 1 { "" } else { "s" }
+                ),
+            }
+        }
+        Cmd::Requests { mine } => {
+            let node = Node::open(&dir)?;
+            let now = now_ms();
+            let me = node.key.public();
+            let watching: std::collections::HashSet<String> = node
+                .store
+                .watches()?
+                .into_iter()
+                .filter(|w| w.request_id.is_some())
+                .map(|w| w.url)
+                .collect();
+            let reqs: Vec<_> = if mine {
+                node.store.requests_by(&me, now)?
+            } else {
+                node.store.requests_active(now)?
+            };
+            if cli.json {
+                return print_json(&reqs).map(|_| true);
+            }
+            for r in reqs {
+                let b = &r.body;
+                println!(
+                    "{}  every {:<8} until {}  {}{}{}",
+                    b.url,
+                    humantime::format_duration(std::time::Duration::from_secs(b.every_secs))
+                        .to_string(),
+                    format_ms(b.expires_at_ms),
+                    if b.requester == me { "mine" } else { "from " },
+                    if b.requester == me {
+                        String::new()
+                    } else {
+                        b.requester.short()
+                    },
+                    if watching.contains(&b.url) {
+                        "  [this node captures it]"
+                    } else {
+                        ""
+                    }
+                );
             }
         }
         Cmd::Request {
@@ -747,8 +876,10 @@ async fn run(cli: Cli) -> Result<bool> {
             every,
             duration,
             render,
+            ..
         } => {
             let node = Node::open(&dir)?;
+            let replaced = node.cancel_requests(&url)?;
             let r =
                 node.request_watch(&url, every.as_secs(), duration.as_millis() as i64, render)?;
             println!(
@@ -758,6 +889,9 @@ async fn run(cli: Cli) -> Result<bool> {
                 humantime::format_duration(every),
                 format_ms(r.body.expires_at_ms)
             );
+            if replaced > 0 {
+                println!("  (replaces your earlier request)");
+            }
         }
         Cmd::Verdict { url } => {
             let node = Node::open(&dir)?;
@@ -867,6 +1001,63 @@ async fn run(cli: Cli) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Misconfigurations that silently keep a node out of the network.
+fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
+    let cfg = &node.config;
+    let mut w = Vec::new();
+    let peers = node.store.peers()?;
+    if cfg.network.endpoint.is_none() && cfg.network.peers.is_empty() && peers.is_empty() {
+        w.push(
+            "federation is off: set network.endpoint and network.peers, then restart the service"
+                .to_string(),
+        );
+    }
+    if let Some(ep) = &cfg.network.endpoint {
+        if ep.starts_with("http://") && !cfg.network.allow_private_peers {
+            w.push(format!(
+                "endpoint {ep} is plain HTTP; public nodes should use https"
+            ));
+        }
+    }
+    if cfg.quorum.asn_db.is_none() {
+        w.push(
+            "no IP-to-ASN table (quorum.asn_db), so no witness's location can be corroborated"
+                .to_string(),
+        );
+    } else if !located && !cfg.quorum.trust_self_reported {
+        w.push(format!(
+            "this node's location isn't corroborated yet; it needs {} peers to observe it \
+             (a few sync rounds), and until then it isn't assigned requests",
+            cfg.quorum.min_observers
+        ));
+    }
+    let failing = peers
+        .iter()
+        .filter(|p| p.endpoint.is_some() && p.last_error.is_some())
+        .count();
+    if failing > 0 {
+        w.push(format!(
+            "{failing} peer(s) failing to sync; see `witness net peers`"
+        ));
+    }
+    let q = &cfg.quorum;
+    for (on, what) in [
+        (q.trust_self_reported, "quorum.trust_self_reported"),
+        (cfg.beacon.allow_insecure_seed, "beacon.allow_insecure_seed"),
+        (
+            cfg.network.allow_private_peers,
+            "network.allow_private_peers",
+        ),
+        (q.min_asns < 3, "quorum.min_asns below 3"),
+        (q.min_dissent_asns < 2, "quorum.min_dissent_asns below 2"),
+    ] {
+        if on {
+            w.push(format!("test-only setting in use: {what}"));
+        }
+    }
+    Ok(w)
 }
 
 fn print_verdict(v: &witness_node::consensus::VerdictView) {

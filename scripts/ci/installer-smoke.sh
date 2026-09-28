@@ -34,11 +34,15 @@ grep -q '"asn":64500' /tmp/descriptor.json
 kill "$pid"
 wait "$pid" 2>/dev/null || true
 
-key() { as_witness env WITNESS_DIR=/var/lib/witness witness id | awk '/witness key/ {print $3}'; }
+# Plain `witness` as root: it finds the node and becomes the witness user.
+witness watch add https://example.org/ --every 6h >/dev/null
+test "$(stat -c %U /var/lib/witness/index.sqlite)" = witness
+
+key() { witness id | awk '/witness key/ {print $3}'; }
 before=$(key)
 sh "$src/scripts/install.sh" --source "$src" --yes --init "$init" --no-detect --no-asn-db --retain normalized
 test "$before" = "$(key)"
-test "$(as_witness env WITNESS_DIR=/var/lib/witness witness config get content.retain)" = normalized
+test "$(witness config get content.retain)" = normalized
 
 sh "$src/scripts/install.sh" --uninstall --purge --yes --init "$init"
 if id witness >/dev/null 2>&1; then echo "the witness user still exists" >&2; exit 1; fi

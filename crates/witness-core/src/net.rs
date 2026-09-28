@@ -81,6 +81,28 @@ impl Statement for WatchRequest {
     }
 }
 
+/// The requester withdrawing one of its watch requests. Assigned witnesses
+/// stop capturing; captures already made stay in their logs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchCancel {
+    /// ID of the `Signed<WatchRequest>`.
+    pub request: Digest,
+    pub requester: WitnessKey,
+    pub issued_at_ms: i64,
+}
+
+impl Statement for WatchCancel {
+    const DOMAIN: &'static str = "witness/watch-cancel/v1";
+    fn encode(&self, e: &mut Encoder) {
+        e.fixed(self.request.as_bytes())
+            .fixed(&self.requester.0)
+            .i64(self.issued_at_ms);
+    }
+    fn signer(&self) -> WitnessKey {
+        self.requester
+    }
+}
+
 /// A witness's statement that it has checked a log's tree head and that it
 /// is consistent with every earlier head it has seen from that log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +277,7 @@ pub fn payload_digest(messages: &[Gossip]) -> Digest {
 pub enum Gossip {
     Descriptor(Signed<Descriptor>),
     Request(Signed<WatchRequest>),
+    Cancel(Signed<WatchCancel>),
     TreeHead(SignedTreeHead),
     Cosignature(Signed<Cosignature>),
     Observation(Signed<Observation>),
@@ -273,6 +296,7 @@ impl Gossip {
         match self {
             Gossip::Descriptor(_) => "descriptor",
             Gossip::Request(_) => "request",
+            Gossip::Cancel(_) => "cancel",
             Gossip::TreeHead(_) => "tree_head",
             Gossip::Cosignature(_) => "cosignature",
             Gossip::Observation(_) => "observation",
@@ -287,6 +311,7 @@ impl Gossip {
         let inner = match self {
             Gossip::Descriptor(s) => s.id(),
             Gossip::Request(s) => s.id(),
+            Gossip::Cancel(s) => s.id(),
             Gossip::TreeHead(h) => Digest::tagged(
                 "witness tree-head-id v1",
                 &[&h.head.signing_bytes(), &h.signature.0],
@@ -324,6 +349,7 @@ impl Gossip {
         match self {
             Gossip::Descriptor(s) => s.verify(),
             Gossip::Request(s) => s.verify(),
+            Gossip::Cancel(s) => s.verify(),
             Gossip::TreeHead(h) => h.verify(),
             Gossip::Cosignature(s) => s.verify(),
             Gossip::Observation(s) => s.verify(),

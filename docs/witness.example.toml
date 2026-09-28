@@ -36,6 +36,11 @@ max_peers = 500
 # Serve raw captured content to others only for these hosts.
 serve_content_hosts = ["tagesschau.de", "bund.de"]
 trust_forwarded_for = false  # true only behind your own reverse proxy
+# Never capture these hosts for network requests (still relayed).
+decline_hosts = ["intranet.example"]
+max_request_watches = 200  # most URLs captured for the network at once
+render_requests = false    # render requests in Chromium; see docs/DESIGN.md §6.4
+allow_private_peers = false  # true only for a closed network on a LAN
 
 [beacon]
 drand_url = "https://api.drand.sh"   # "" to disable

@@ -21,12 +21,12 @@ use serde::{Deserialize, Serialize};
 use witness_core::assign::{self, Candidate, DiversityPolicy};
 use witness_core::beacon::{self, epoch_of};
 use witness_core::net::{
-    Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope, WatchRequest,
-    payload_digest,
+    Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope, WatchCancel,
+    WatchRequest, payload_digest,
 };
 use witness_core::statement::Signed;
 use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, merkle, now_ms, target};
-use witness_store::net::Peer;
+use witness_store::net::{Peer, RequestWatch};
 
 use crate::Node;
 use crate::httpc::{join, status_of};
@@ -38,18 +38,45 @@ pub const MAX_REQUEST_MS: i64 = 30 * 86_400_000;
 pub const MIN_REQUEST_EVERY_SECS: u64 = 600;
 /// Allowed clock skew for timestamps in messages.
 pub const SKEW_MS: i64 = 5 * 60_000;
+/// Descriptors older than this are stale; nodes re-issue theirs every run
+/// and re-announce it every sync.
+const DESCRIPTOR_TTL_MS: i64 = 7 * 86_400_000;
+const DESCRIPTOR_REFRESH_MS: i64 = 86_400_000;
+/// Beacons older than this aren't needed for assignment or captures, and
+/// accepting all of drand's history would let anyone flood the store.
+const BEACON_MAX_AGE_MS: i64 = 3 * 86_400_000;
+/// Peers synced at once.
+const SYNC_CONCURRENCY: usize = 8;
+/// How long to wait before retrying a peer whose last sync failed.
+const RETRY_MS: i64 = 10 * 60_000;
 const PAGE: usize = 1000;
 const GOSSIP_PAGE: u32 = 500;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GossipPage {
+    #[serde(deserialize_with = "skip_unknown")]
     pub messages: Vec<(i64, Gossip)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     pub envelope: Signed<PushEnvelope>,
+    #[serde(deserialize_with = "skip_unknown")]
     pub messages: Vec<Gossip>,
+}
+
+/// Message kinds from newer versions are skipped instead of failing the
+/// whole page, so nodes can be upgraded one at a time.
+fn skip_unknown<'de, D, T>(d: D) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -98,6 +125,19 @@ impl Node {
         )?)
     }
 
+    /// This node's descriptor, re-signed once a day: peers ignore
+    /// descriptors older than `DESCRIPTOR_TTL_MS`, and a long-running node
+    /// must not age out of their tables.
+    pub fn descriptor(&self) -> Signed<Descriptor> {
+        let mut d = self.descriptor.lock().unwrap_or_else(|p| p.into_inner());
+        if now_ms() - d.body.issued_at_ms > DESCRIPTOR_REFRESH_MS {
+            if let Ok(fresh) = self.build_descriptor() {
+                *d = fresh;
+            }
+        }
+        d.clone()
+    }
+
     /// Add a message this node created to its outbox.
     pub fn publish(&self, g: Gossip) -> Result<bool> {
         Ok(self.store.gossip_insert(&g, now_ms())?.is_some())
@@ -114,27 +154,29 @@ impl Node {
             return Ok(false);
         }
         let me = self.key.public();
-        let accept = match &g {
-            Gossip::Descriptor(d) => {
-                let b = &d.body;
-                let endpoint_ok = b.endpoint.as_deref().is_none_or(|e| {
-                    url::Url::parse(e).is_ok_and(|u| u.scheme() == "http" || u.scheme() == "https")
-                });
-                if b.issued_at_ms > now + SKEW_MS || !endpoint_ok {
-                    false
-                } else if b.key == me {
-                    true
-                } else {
-                    let known = self.store.peer(&b.key)?.is_some();
-                    if known || self.store.peers()?.len() < self.config.network.max_peers {
-                        self.store.peer_upsert(d, now)?;
-                        true
-                    } else {
-                        false
-                    }
-                }
+        // Keys are free, so everything but descriptors must come from a
+        // witness in the peer table, whose size is capped. Otherwise anyone
+        // could flood alerts, requests and receipts from throwaway keys.
+        let signer = match &g {
+            Gossip::Descriptor(_) | Gossip::Beacon(_) => None,
+            Gossip::Request(r) => Some(r.body.requester),
+            Gossip::Cancel(c) => Some(c.body.requester),
+            Gossip::TreeHead(h) => Some(h.head.log),
+            Gossip::Cosignature(c) => Some(c.body.cosigner),
+            Gossip::Observation(o) => Some(o.body.observer),
+            Gossip::Alert(a) => Some(a.body.issuer),
+            Gossip::Equivocation { a, .. } => Some(a.head.log),
+            Gossip::TlsnReceipt(r) => Some(r.body.verifier),
+        };
+        if let Some(k) = signer {
+            if k != me && self.store.peer(&k)?.is_none() {
+                return Ok(false);
             }
+        }
+        let accept = match &g {
+            Gossip::Descriptor(d) => self.accept_descriptor(d, now)?,
             Gossip::Request(r) => self.accept_request(r, now)?,
+            Gossip::Cancel(c) => self.accept_cancel(c, now)?,
             Gossip::TreeHead(h) => {
                 if let Some(p) = self.store.peer(&h.head.log)? {
                     if let Some(known) = &p.head {
@@ -166,8 +208,13 @@ impl Node {
                 true
             }
             Gossip::Beacon(b) => {
-                self.store.beacon_insert(b)?;
-                true
+                let t = b.time_ms();
+                if t > now + SKEW_MS || t < now - BEACON_MAX_AGE_MS {
+                    false
+                } else {
+                    self.store.beacon_insert(b)?;
+                    true
+                }
             }
             // Receipts travel for transparency; provers store their own.
             Gossip::TlsnReceipt(r) => r.body.verified_at_ms <= now + SKEW_MS,
@@ -176,6 +223,32 @@ impl Node {
             self.store.gossip_insert(&g, now)?;
         }
         Ok(accept)
+    }
+
+    fn accept_descriptor(&self, d: &Signed<Descriptor>, now: i64) -> Result<bool> {
+        let b = &d.body;
+        let endpoint_ok = b.endpoint.as_deref().is_none_or(|e| {
+            url::Url::parse(e).is_ok_and(|u| u.scheme() == "http" || u.scheme() == "https")
+        });
+        if b.issued_at_ms > now + SKEW_MS
+            || b.issued_at_ms < now - DESCRIPTOR_TTL_MS
+            || !endpoint_ok
+        {
+            return Ok(false);
+        }
+        if b.key == self.key.public() {
+            return Ok(true);
+        }
+        if self.store.peer(&b.key)?.is_none()
+            && self.store.peers()?.len() >= self.config.network.max_peers
+        {
+            // Only a reachable witness is worth evicting a dead one for.
+            if b.endpoint.is_none() || !self.store.peer_evict_one(now)? {
+                return Ok(false);
+            }
+        }
+        self.store.peer_upsert(d, now)?;
+        Ok(true)
     }
 
     fn accept_request(&self, r: &Signed<WatchRequest>, now: i64) -> Result<bool> {
@@ -189,6 +262,7 @@ impl Node {
             && b.issued_at_ms <= now + SKEW_MS
             && b.expires_at_ms > now
             && b.expires_at_ms - b.issued_at_ms <= MAX_REQUEST_MS
+            && !self.store.request_cancelled(&r.id(), &b.requester)?
             && self.store.requests_active_by(&b.requester, now)?
                 < self.config.network.max_requests_per_requester;
         if !ok {
@@ -197,10 +271,30 @@ impl Node {
         self.store.request_insert(r)?;
         // Take it on right away if this node is assigned.
         if let Ok((seed, _)) = self.epoch_seed_cached(epoch_of(now)) {
-            let assigned = self.assigned(&seed, &canonical, now)?;
-            if assigned.iter().any(|c| c.key == self.key.public()) {
-                self.store.watch_for_request(r, now)?;
-            }
+            self.apply_requests(&seed, now)?;
+        }
+        Ok(true)
+    }
+
+    fn accept_cancel(&self, c: &Signed<WatchCancel>, now: i64) -> Result<bool> {
+        let b = &c.body;
+        if b.issued_at_ms > now + SKEW_MS {
+            return Ok(false);
+        }
+        // Keep the cancellation as long as the request could still be live.
+        let expires = match self.store.request(&b.request)? {
+            Some(r) if r.body.requester != b.requester => return Ok(false),
+            Some(r) => r.body.expires_at_ms,
+            None => b.issued_at_ms + MAX_REQUEST_MS,
+        };
+        if !self
+            .store
+            .request_cancel(&b.request, &b.requester, expires)?
+        {
+            return Ok(false);
+        }
+        if let Ok((seed, _)) = self.epoch_seed_cached(epoch_of(now)) {
+            self.apply_requests(&seed, now)?;
         }
         Ok(true)
     }
@@ -269,7 +363,7 @@ impl Node {
         let mut keys = vec![self.key.public()];
         for p in self.store.peers()? {
             if p.endpoint.is_some()
-                && p.descriptor.body.issued_at_ms >= now - 7 * 86_400_000
+                && p.descriptor.body.issued_at_ms >= now - DESCRIPTOR_TTL_MS
                 && !bad.contains(&p.key)
             {
                 keys.push(p.key);
@@ -297,12 +391,11 @@ impl Node {
     }
 
     pub fn assigned(&self, seed: &Digest, url: &url::Url, now: i64) -> Result<Vec<Candidate>> {
-        Ok(assign::assign(
-            seed,
-            &target::url_key(url),
-            &self.candidates(now)?,
-            &self.policy(),
-        ))
+        Ok(self.assigned_among(seed, url, &self.candidates(now)?))
+    }
+
+    fn assigned_among(&self, seed: &Digest, url: &url::Url, cands: &[Candidate]) -> Vec<Candidate> {
+        assign::assign(seed, &target::url_key(url), cands, &self.policy())
     }
 
     /// Seed for an epoch from stored beacons only (no network). The bool is
@@ -320,26 +413,66 @@ impl Node {
     /// Re-evaluate which active requests this node is assigned to.
     pub async fn reconcile_requests(&self) -> Result<usize> {
         let now = now_ms();
-        let epoch = epoch_of(now);
-        let seed = match self.epoch_seed(epoch).await {
+        let seed = match self.epoch_seed(epoch_of(now)).await {
             Ok((s, _)) => s,
             Err(_) => return Ok(0),
         };
         self.store.requests_prune(now)?;
-        let mut keep = Vec::new();
-        for r in self.store.requests_active(now)? {
+        self.apply_requests(&seed, now)
+    }
+
+    /// Set this node's request-driven watches to exactly the URLs it is
+    /// assigned for, each at the shortest interval any active request asks
+    /// for. Returns how many URLs it watches for the network.
+    fn apply_requests(&self, seed: &Digest, now: i64) -> Result<usize> {
+        let me = self.key.public();
+        let cands = self.candidates(now)?;
+        let net = &self.config.network;
+        let mut by_url: std::collections::BTreeMap<String, RequestWatch> = Default::default();
+        let mut not_mine = HashSet::new();
+        let mut requests = self.store.requests_active(now)?;
+        // Oldest first, so a flood of new requests can't displace them.
+        requests.sort_by_key(|r| r.body.issued_at_ms);
+        for r in requests {
             let Ok(url) = target::canonical_url(&r.body.url) else {
                 continue;
             };
+            if crate::host_listed(&net.decline_hosts, &url) {
+                continue;
+            }
+            let render = r.body.render && net.render_requests;
+            if let Some(w) = by_url.get_mut(url.as_str()) {
+                w.every_secs = w.every_secs.min(r.body.every_secs);
+                w.expires_at_ms = w.expires_at_ms.max(r.body.expires_at_ms);
+                w.render |= render;
+                continue;
+            }
+            if by_url.len() >= net.max_request_watches || not_mine.contains(url.as_str()) {
+                continue;
+            }
             if self
-                .assigned(&seed, &url, now)?
+                .assigned_among(seed, &url, &cands)
                 .iter()
-                .any(|c| c.key == self.key.public())
+                .any(|c| c.key == me)
             {
-                self.store.watch_for_request(&r, now)?;
-                keep.push(r.body.url.clone());
+                by_url.insert(
+                    url.to_string(),
+                    RequestWatch {
+                        url: url.to_string(),
+                        every_secs: r.body.every_secs,
+                        render,
+                        request: r.id(),
+                        expires_at_ms: r.body.expires_at_ms,
+                    },
+                );
+            } else {
+                not_mine.insert(url.to_string());
             }
         }
+        for w in by_url.values() {
+            self.store.watch_for_request(w, now)?;
+        }
+        let keep: Vec<String> = by_url.into_keys().collect();
         self.store.watch_drop_requested(&keep, now)?;
         Ok(keep.len())
     }
@@ -380,6 +513,30 @@ impl Node {
         Ok(r)
     }
 
+    /// Withdraw this node's active requests for a URL. Returns how many.
+    pub fn cancel_requests(&self, url: &str) -> Result<usize> {
+        let url = target::canonical_url(url)?;
+        let now = now_ms();
+        let mut n = 0;
+        for r in self.store.requests_by(&self.key.public(), now)? {
+            if r.body.url != url.as_str() {
+                continue;
+            }
+            let c = Signed::sign(
+                WatchCancel {
+                    request: r.id(),
+                    requester: self.key.public(),
+                    issued_at_ms: now,
+                },
+                &self.key,
+            )?;
+            if self.ingest(Gossip::Cancel(c))? {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
     /// Fetch a peer's descriptor from its endpoint and add it.
     pub async fn add_peer(&self, endpoint: &str) -> Result<Signed<Descriptor>> {
         let d: Signed<Descriptor> = self.net.get_json(&join(endpoint, "/v1/descriptor")).await?;
@@ -399,7 +556,7 @@ impl Node {
     /// One federation round with every reachable peer.
     pub async fn sync(&self) -> Result<SyncReport> {
         let mut report = SyncReport::default();
-        self.publish(Gossip::Descriptor(self.descriptor.clone()))?;
+        self.publish(Gossip::Descriptor(self.descriptor()))?;
         if let Some(h) = self.store.latest_tree_head()? {
             self.publish(Gossip::TreeHead(h))?;
         }
@@ -418,12 +575,25 @@ impl Node {
             }
         }
         let bad = self.store.equivocating_logs()?;
-        for peer in self.store.peers()? {
-            if peer.endpoint.is_none() || bad.contains(&peer.key) {
-                continue;
-            }
-            report.peers += 1;
-            match self.sync_peer(&peer).await {
+        let now = now_ms();
+        let due: Vec<Peer> = self
+            .store
+            .peers()?
+            .into_iter()
+            .filter(|p| p.endpoint.is_some() && !bad.contains(&p.key))
+            // Back off from peers whose last attempt failed.
+            .filter(|p| p.last_error.is_none() || p.last_sync.is_none_or(|t| now - t >= RETRY_MS))
+            .collect();
+        report.peers = due.len();
+        use futures::StreamExt;
+        let mut results = futures::stream::iter(due)
+            .map(|peer| async move {
+                let r = self.sync_peer(&peer).await;
+                (peer, r)
+            })
+            .buffer_unordered(SYNC_CONCURRENCY);
+        while let Some((peer, r)) = results.next().await {
+            match r {
                 Ok(s) => {
                     report.synced += 1;
                     report.new_leaves += s.new_leaves;
@@ -441,7 +611,9 @@ impl Node {
         }
         self.reconcile_requests().await?;
         self.review_verdicts()?;
-        self.store.gossip_prune(now_ms() - 7 * 86_400_000)?;
+        let now = now_ms();
+        self.store
+            .gossip_prune(now - 7 * 86_400_000, now - MAX_REQUEST_MS - 86_400_000)?;
         Ok(report)
     }
 
@@ -685,5 +857,50 @@ impl Node {
             .unwrap_or_else(|p| p.into_inner());
         seen.retain(|_, t| now - *t <= 2 * SKEW_MS);
         seen.insert(id, now).is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_is_resigned_before_peers_drop_it() {
+        let t = tempfile::tempdir().unwrap();
+        Node::init(t.path(), &crate::config::Config::default()).unwrap();
+        let node = Node::open(t.path()).unwrap();
+        let mut old = node.descriptor();
+        old.body.issued_at_ms = now_ms() - 2 * DESCRIPTOR_REFRESH_MS;
+        *node.descriptor.lock().unwrap() = Signed::sign(old.body, &node.key).unwrap();
+        let d = node.descriptor();
+        assert!(now_ms() - d.body.issued_at_ms < 60_000);
+        d.verify().unwrap();
+    }
+
+    #[test]
+    fn unknown_message_kinds_are_skipped() {
+        let json = r#"{"messages": [
+            [1, {"type": "from_the_future", "x": 1}],
+            [2, {"type": "beacon", "round": 1, "signature": "00"}]
+        ]}"#;
+        let page: GossipPage = serde_json::from_str(json).unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0].0, 2);
+    }
+
+    #[test]
+    fn host_lists_match_subdomains_only() {
+        let hosts = vec!["example.org".to_string(), ".news.example".to_string()];
+        let m = |u: &str| crate::host_listed(&hosts, &url::Url::parse(u).unwrap());
+        assert!(m("https://example.org/a"));
+        assert!(m("https://www.Example.org/a"));
+        assert!(m("https://news.example/"));
+        assert!(m("https://a.news.example/"));
+        assert!(!m("https://notexample.org/"));
+        assert!(!m("https://example.org.evil.test/"));
+        assert!(!crate::host_listed(
+            &[String::new()],
+            &url::Url::parse("https://a.b/").unwrap()
+        ));
     }
 }

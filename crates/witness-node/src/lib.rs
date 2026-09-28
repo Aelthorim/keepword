@@ -9,6 +9,7 @@ pub mod consensus;
 pub mod daemon;
 pub mod federation;
 pub mod httpc;
+pub mod sysdir;
 pub mod vantage;
 pub mod web;
 
@@ -41,7 +42,8 @@ pub struct Node {
     pub net: httpc::Http,
     pub asn_db: Option<vantage::AsnDb>,
     /// This node's descriptor for the current run.
-    pub descriptor: witness_core::statement::Signed<witness_core::net::Descriptor>,
+    /// This node's signed descriptor; see `Node::descriptor`.
+    descriptor: Mutex<witness_core::statement::Signed<witness_core::net::Descriptor>>,
     seen_envelopes: Mutex<HashMap<Digest, i64>>,
 }
 
@@ -62,6 +64,17 @@ pub struct ChangeInfo {
     pub diff: Option<Change>,
 }
 
+/// Whether `url`'s host is one of `hosts` or a subdomain of one.
+pub fn host_listed(hosts: &[String], url: &Url) -> bool {
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    hosts
+        .iter()
+        .map(|h| h.trim_start_matches('.').to_ascii_lowercase())
+        .any(|h| !h.is_empty() && (host == h || host.ends_with(&format!(".{h}"))))
+}
+
 impl Node {
     pub fn open(dir: &Path) -> Result<Self> {
         let config = Config::load(dir)?;
@@ -70,7 +83,7 @@ impl Node {
         let normalizer = Normalizer::new(config.rules.clone())?;
         let http = HttpCapturer::new(config.http())?;
         let net = httpc::Http::new(
-            config.capture.allow_private_addresses,
+            config.network.allow_private_peers,
             config.capture.use_system_proxy,
         )?;
         let asn_db = config
@@ -98,10 +111,10 @@ impl Node {
             http,
             net,
             asn_db,
-            descriptor: placeholder,
+            descriptor: Mutex::new(placeholder),
             seen_envelopes: Mutex::new(HashMap::new()),
         };
-        node.descriptor = node.build_descriptor()?;
+        node.descriptor = Mutex::new(node.build_descriptor()?);
         Ok(node)
     }
 
@@ -130,6 +143,24 @@ impl Node {
 
     #[cfg(feature = "render")]
     async fn render(&self, url: &Url) -> Result<Captured> {
+        // Chromium resolves hosts itself, so the capturer's resolver can't
+        // protect it. Check the page's own address here; sub-resources and
+        // DNS rebinding are why network requests only render when the
+        // operator opts in (network.render_requests).
+        if !self.config.capture.allow_private_addresses {
+            let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+            let port = url.port_or_known_default().unwrap_or(443);
+            let addrs: Vec<_> = tokio::net::lookup_host((host, port)).await?.collect();
+            if let Some(a) = addrs
+                .iter()
+                .find(|a| !witness_capture::netpolicy::is_public(a.ip()))
+            {
+                bail!(
+                    "{host} resolves to {}, which is not a public address",
+                    a.ip()
+                );
+            }
+        }
         let cfg = witness_capture::RenderConfig {
             executable: self.config.capture.chrome.clone(),
             user_agent: self.config.capture.user_agent.clone(),
