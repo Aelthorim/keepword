@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-labelledby="t d">
+  <title id="t">Witness</title>
+  <desc id="d">A privacy policy quietly changes from "We never sell your data" to "We may share your data with partners". Three independent witnesses have sealed what the page said.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1026"/>
+      <stop offset="1" stop-color="#1b1446"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="#6d5dfc" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6d5dfc" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffcf5c"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="440" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="440" rx="24" fill="url(#glow)"/>
+
+  <!-- the network: independent witnesses around the page -->
+  <g stroke="#8b7bff" stroke-opacity="0.35" stroke-width="1.5" fill="none">
+    <path d="M700 70 L840 150"/>
+    <path d="M1210 90 L1110 150"/>
+    <path d="M1225 360 L1110 300"/>
+    <path d="M690 380 L830 300"/>
+    <path d="M700 70 L1210 90" stroke-dasharray="4 8"/>
+    <path d="M1225 360 L690 380" stroke-dasharray="4 8"/>
+  </g>
+  <g fill="#b4a9ff">
+    <circle cx="700" cy="70" r="7"/>
+    <circle cx="1210" cy="90" r="7"/>
+    <circle cx="1225" cy="360" r="7"/>
+    <circle cx="690" cy="380" r="7"/>
+  </g>
+  <g fill="#b4a9ff" fill-opacity="0.5" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+    <text x="662" y="52">Frankfurt</text>
+    <text x="1172" y="72">Paris</text>
+    <text x="1180" y="392">Toronto</text>
+    <text x="656" y="412">Singapore</text>
+  </g>
+
+  <!-- the page -->
+  <g filter="url(#shadow)">
+    <rect x="820" y="120" width="310" height="210" rx="14" fill="#ffffff"/>
+  </g>
+  <rect x="820" y="120" width="310" height="34" rx="14" fill="#eef0f6"/>
+  <rect x="820" y="140" width="310" height="14" fill="#eef0f6"/>
+  <circle cx="842" cy="137" r="5" fill="#ff6b6b"/>
+  <circle cx="860" cy="137" r="5" fill="#ffc94d"/>
+  <circle cx="878" cy="137" r="5" fill="#51cf66"/>
+  <rect x="898" y="129" width="212" height="16" rx="8" fill="#ffffff"/>
+  <text x="908" y="141" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8a8fa3">shop.example/privacy</text>
+
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="842" y="186" font-size="19" font-weight="700" fill="#1b1f33">Privacy Policy</text>
+    <rect x="842" y="202" width="266" height="30" rx="6" fill="#ffe3e3"/>
+    <text x="852" y="222" font-size="14" fill="#c92a2a">− We never sell your data.</text>
+    <line x1="866" y1="217" x2="1013" y2="217" stroke="#c92a2a" stroke-width="1.6"/>
+    <rect x="842" y="240" width="266" height="30" rx="6" fill="#d3f9d8"/>
+    <text x="852" y="260" font-size="14" fill="#2b8a3e">+ We may share your data…</text>
+    <rect x="842" y="284" width="190" height="8" rx="4" fill="#e9ecf3"/>
+    <rect x="842" y="302" width="140" height="8" rx="4" fill="#e9ecf3"/>
+  </g>
+
+  <!-- the seal -->
+  <g transform="translate(1108 318) rotate(-12)">
+    <circle r="54" fill="url(#seal)"/>
+    <circle r="46" fill="none" stroke="#7a4b00" stroke-opacity="0.55" stroke-width="1.5" stroke-dasharray="3 3"/>
+    <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle" fill="#4a2c00">
+      <text y="-14" font-size="11" font-weight="700" letter-spacing="1.5">WITNESSED</text>
+      <text y="8" font-size="21" font-weight="800">3 ✓</text>
+      <text y="25" font-size="8.5" font-weight="700" letter-spacing="0.3">NETWORKS AGREE</text>
+    </g>
+  </g>
+
+  <!-- words -->
+  <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="72" y="150" font-size="84" font-weight="800" fill="#ffffff" letter-spacing="-2">Witness</text>
+    <text x="74" y="212" font-size="30" font-weight="600" fill="#e8e5ff">Web pages change quietly.</text>
+    <text x="74" y="252" font-size="30" font-weight="600" fill="#ffcf5c">Now there's proof of what they said.</text>
+    <text x="74" y="310" font-size="18" fill="#b9b6d9">Independent witnesses around the world record web pages,</text>
+    <text x="74" y="336" font-size="18" fill="#b9b6d9">seal what they saw with cryptography, and catch every</text>
+    <text x="74" y="362" font-size="18" fill="#b9b6d9">silent edit. Anyone can check the proof.</text>
+  </g>
+</svg>

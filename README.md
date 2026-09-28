@@ -1,6 +1,164 @@
-# Witness
+<p align="center">
+  <img src="docs/assets/banner.svg" width="100%" alt="Witness. Web pages change quietly. Now there's proof of what they said.">
+</p>
 
-Independent, verifiable records of what a web page said, and when.
+<p align="center">
+  <a href="https://github.com/Aelthorim/witness/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/witness/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
+  <img src="https://img.shields.io/badge/written%20in-Rust-dea584" alt="Written in Rust">
+  <img src="https://img.shields.io/badge/network-early%20days-8b7bff" alt="Network: early days">
+</p>
+
+<p align="center">
+  <b>Screenshots can be faked. Archives are run by one organization.<br>
+  Witness is a network of independent witnesses whose records anyone can check.</b>
+</p>
+
+---
+
+## Web pages don't keep their word
+
+Paper stays the way it was printed. Web pages can be rewritten at any
+moment, and the old version simply vanishes:
+
+- 🔏 A company edits its **privacy policy** overnight. What it promised you
+  yesterday is gone.
+- 📰 A **news article** is quietly "updated", with no note saying what
+  changed.
+- 🏷️ A shop shows **one price to you** and another to someone in a
+  different country.
+- 🏛️ An **official page** disappears, and with it the commitment it made.
+
+When that happens, how do you prove what the page said? A screenshot takes
+ten seconds to fake. "I saw it with my own eyes" is your word against
+theirs.
+
+## Witness keeps the receipts
+
+<p align="center">
+  <img src="docs/assets/how-it-works.svg" width="100%" alt="1. Many witnesses in different countries look at the same page. 2. Each one seals what it saw. 3. They compare notes and flag quiet edits. 4. Anyone can check the proof.">
+</p>
+
+Witness is a network of computers, called **witnesses**, run by different
+people in different countries. Point them at a page you care about, and
+they:
+
+1. **Look.** Several witnesses on different networks fetch the page. They
+   ignore the noise (ads, cookie banners, "posted 5 minutes ago") and keep
+   what the page actually says.
+2. **Seal.** Each witness signs what it saw and stamps it with the time,
+   using public randomness from [drand](https://drand.love) and, a little
+   later, the Bitcoin blockchain. Once sealed, a record can't be changed or
+   backdated. Not by the website, not by you, not even by the witness that
+   made it.
+3. **Compare.** When a page changes without saying so, Witness flags it as
+   a **silent edit** and shows exactly what changed. When witnesses in
+   different places were shown different versions, it flags a **split**.
+4. **Prove.** Any record can be exported as a small evidence file. Anyone
+   can check it on their own computer, offline, without trusting Witness,
+   the witnesses, or you.
+
+## What it looks like
+
+A privacy policy changes, and nothing on the page says so:
+
+```diff
+  Privacy policy
+- We never sell your data.
++ We may share your data with partners.
+```
+
+Witness records it as a **silent edit**, and the proof checks out anywhere:
+
+```text
+$ witness verify --bundle evidence.json --esplora https://blockstream.info/api
+  [ok  ] signature      signed by witness 7b757b5c…
+  [ok  ] log inclusion  leaf 1187 of 1204
+  [ok  ] cosignatures   tree head cosigned by 16 other witnesses
+  [ok  ] not before     captured after 2026-05-01T09:14:03Z (drand round 5902114, 2s before the claimed time)
+  [ok  ] anchor         tree head existed by Bitcoin block 947301
+  [ok  ] body           41233 bytes, hash 4b768329a126
+  ...
+VERIFIED
+```
+
+## Why you can trust it
+
+| You don't have to trust… | …because |
+|---|---|
+| **any single company** | Witnesses are run by independent people. A verdict only counts when witnesses on at least three different networks agree, so no single operator can fake one. |
+| **anyone's promise** | Every record is signed and goes into a public, append-only log. Other witnesses check each log, so rewriting history gets caught, and the proof of it spreads to everyone. |
+| **anyone's clock** | Public randomness proves a record wasn't made *before* a moment; Bitcoin proves it existed *by* a later one. |
+| **Witness itself** | Evidence files check out on any computer, with no account, no server and no internet connection. |
+
+## Who it's for
+
+- **Journalists and fact-checkers:** "The article said X on Monday, and
+  here's the proof."
+- **Consumer groups and lawyers:** terms of service, prices and policies,
+  exactly as they stood on a given day.
+- **Researchers:** how the web changes, and who gets shown what.
+- **Anyone** who has ever thought *"wait, that's not what it said
+  yesterday."*
+
+## What it isn't
+
+- **Not an archive of the whole web.** The Internet Archive does that, and
+  does it well. Witness records the pages people choose to watch, and
+  proves what they said without asking anyone to trust one organization.
+- **Not a lie detector.** It proves what a page *said* and *when*, not
+  whether it was *true*.
+- **Not finished.** It works end to end today and the network is just
+  starting. Using it currently means running a small server and typing a
+  few commands; friendlier ways in are on the way.
+
+## Get involved
+
+- ⭐ **Star the repo** to follow along.
+- 🖥️ **Run a witness.** The network gets stronger with every witness in a
+  new country or network. One command sets up a server:
+  [docs/NETWORK.md](docs/NETWORK.md).
+- 🔍 **Watch a page that matters to you.** Install a node and ask the
+  network to keep an eye on it.
+- 🛠️ **Build with us.** Everything is in Rust, tested end to end, and
+  documented in [docs/DESIGN.md](docs/DESIGN.md).
+
+<details>
+<summary><b>Questions people ask</b></summary>
+
+**Do I need to be technical?**
+Today, running a witness takes a Linux server and a terminal, but setup is
+a single command. Checking a proof takes the `witness` program. A simpler
+way for everyone is on the roadmap.
+
+**What does it cost?**
+The software is free. A witness runs happily on a small cloud server that
+costs a few euros a month.
+
+**Does it track people?**
+No. Witnesses only fetch public pages that someone asked them to watch.
+They don't collect anything about visitors.
+
+**What if a witness lies?**
+Its record would disagree with the others, and the network notices. A
+witness that shows different histories to different people produces
+cryptographic proof against itself, and the network stops trusting it.
+
+**Can a website stop it?**
+A site can block witnesses, but that's visible too. And a site that shows
+witnesses in one country a different page than in another gets flagged
+for exactly that.
+
+**Is it legal?**
+Witnesses fetch public pages, like a browser does. Operators choose what
+their witness keeps and shares; by default it shares only fingerprints
+(hashes), never page content. See [DESIGN.md §7](docs/DESIGN.md#7-storage-retention-and-law)
+for the details, and check your local law before running a public witness.
+
+</details>
+
+---
+
+# For the technically curious
 
 A Witness node fetches a URL, reduces it to its meaningful content, signs a
 statement about what it saw, and appends that statement to a
@@ -9,10 +167,11 @@ page changes it tells you what changed and whether the publisher said so.
 Every record can be exported as a self-contained **evidence bundle** that
 anyone can verify offline, without trusting the node.
 
-Witnesses federate: they audit and cosign each other's logs, take on
-watch requests assigned by public randomness, corroborate each other's
-network location, and compare what they saw. When independent networks see
-different content at the same moment, the network raises a cloaking alert.
+Witnesses federate: each log is audited by 16 others, which check its
+checkpoints with consistency proofs and cosign them. Watch requests are
+assigned by public randomness, witnesses corroborate each other's network
+location, and they compare what they saw. When independent networks see
+different content at the same moment, the network raises a split alert.
 Captures carry a drand beacon, which proves they happened *after* a point
 in time. Logs are anchored in Bitcoin through OpenTimestamps, which proves
 the captures existed *before* a later point.
