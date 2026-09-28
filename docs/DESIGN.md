@@ -386,12 +386,35 @@ Self-reported ASN is worthless on its own. Pushes carry a signed envelope
 The receiver answers with an **observation receipt**: "I saw key K connect
 from IP X at time T", which floods like any gossip. A verifier maps each IP
 to an ASN with its own copy of a public IP→ASN table (iptoasn.com format,
-`quorum.asn_db`). A location counts once at least `min_observers` distinct
-observers (not K itself) agree on the same ASN. An observer issues a new
-receipt for the same witness at the same address at most weekly, and hands
-back the existing one otherwise, so receipts don't grow with sync rounds. Without an ASN table nothing
-is corroborated. `quorum.trust_self_reported` exists for test networks
+`quorum.asn_db`).
+
+Keys are free, so a verifier never counts observers as such. One server
+with twenty keys could otherwise sign receipts vouching that each of its
+keys sits in a different network, and verdicts would count twenty
+independent witnesses. Instead a verifier decides where K is like this:
+
+1. **What it saw itself wins.** If K has pushed to the verifier, the
+   address the verifier saw settles K's location. No number of other
+   receipts outvotes it.
+2. **Otherwise, receipts count per observer network.** A receipt only
+   counts if the verifier has itself seen its observer connect, and all
+   observers in one network count once. A location needs
+   `min_observers` (2) independent observer networks to agree on it.
+   Twenty keys on one server are one observer network, so they can't
+   vouch each other into anything.
+
+With peer sampling every witness pushes to every other within about a day,
+so in practice rule 1 decides almost every location, and all honest nodes
+see the same one. An observer issues a new receipt for the same witness at
+the same address at most weekly, and hands back the existing one
+otherwise, so receipts don't grow with sync rounds. Without an ASN table
+nothing is corroborated. `quorum.trust_self_reported` exists for test networks
 only.
+
+What remains is the expensive version of the attack: really connecting
+from many networks, through proxies or rented servers at many providers.
+That costs money per network, and it is what the network's independence
+ultimately rests on (see below and §9).
 
 This establishes where a node *is* (its egress), not where each fetch came
 *from*. A malicious node can still fetch through a proxy, and no protocol

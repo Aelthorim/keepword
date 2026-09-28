@@ -152,7 +152,9 @@ pub struct QuorumConfig {
     pub min_dissent_asns: usize,
     /// ip2asn-combined.tsv from iptoasn.com, for corroborating vantage.
     pub asn_db: Option<PathBuf>,
-    /// Distinct observers needed to corroborate a witness's location.
+    /// Independent observer networks needed to corroborate a witness's
+    /// location this node hasn't seen connect itself (see docs/DESIGN.md
+    /// §6.3).
     pub min_observers: usize,
     /// Count self-reported ASNs. Only for test networks.
     pub trust_self_reported: bool,

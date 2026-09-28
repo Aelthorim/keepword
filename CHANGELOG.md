@@ -38,7 +38,9 @@ produce evidence anyone can verify offline.
   with consistency proofs and cosign them. A log that shows two histories
   produces cryptographic proof against itself and is excluded.
 - Location corroboration: peers confirm each other's network (ASN) from
-  the addresses their connections come from.
+  the addresses their connections come from. A node trusts what it saw
+  itself, and otherwise counts observers once per network, so one server
+  with many keys can't pass itself off as many independent witnesses.
 - Watch requests assigned by public randomness, at most one witness per
   network, capped per country; requests can be replaced and withdrawn.
 - Verdicts that count independent networks: agreed, split (a site showing
