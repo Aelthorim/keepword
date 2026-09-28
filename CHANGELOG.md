@@ -20,6 +20,23 @@ data; upgrading is recommended for every witness.
   where it saw that witness connect itself; receipts only tell a node
   where it is itself. New witnesses count at every node once they have
   pushed to it, within about a day.
+- **Anyone could spend other witnesses' recheck captures.** A recheck
+  request only had to come from a key assigned to the URL, and any key is
+  assigned to some URLs (it only has to try enough of them). Drawn
+  witnesses now fetch the assigned witnesses' attestations first and only
+  capture when they see the round disputed themselves; skipped requests
+  don't use up `quorum.max_rechecks_per_hour`.
+- **Honest witnesses were charged for page edits.** A witness that
+  captured a page just before its publisher edited it failed the rechecks
+  made after the edit, and five of those in a week left its network out
+  of verdicts. A version other networks saw too, captured before any other
+  network saw the version the rechecks confirmed, now costs nothing.
+- **Recheck draws were judged by the wrong round.** A draw that completed
+  after a newer round had started was settled against the newer round's
+  versions, so witnesses could be charged for reporting the current page.
+  Each draw is now judged by the versions of the round it was drawn for,
+  and settled even when that round is no longer the current one; only
+  draws of rounds with the same versions add up in a verdict.
 - **A forked log could hide behind its own old heads.** Auditors checked
   gossiped heads oldest first, eight per audit, so a log could sign heads
   of the history its forks share (all consistent) and gossip them ahead of

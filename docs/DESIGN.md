@@ -512,11 +512,17 @@ witnesses located there, one per network and none assigned to the URL:
 the draw is keyed by the epoch's drand seed, the URL and a fixed slot of
 time (the comparison window), so every node computes the same recheckers,
 and neither the requester nor anyone else can retry until a draw suits
-them. The drawn witnesses capture the page again (at most
-`quorum.max_rechecks_per_hour` each). A version is **confirmed** if, in a
+them. A drawn witness first fetches the assigned witnesses' attestations
+and only captures the page again if it sees their round disputed itself
+(at most `quorum.max_rechecks_per_hour` captures each): any key is assigned
+to some URLs, since it only has to try enough of them, so a request alone
+must not be able to spend other witnesses' captures. A version is
+**confirmed** if, in a
 country it was reported from, at least `quorum.recheck_quorum` (3) of the
 rechecking networks saw it and they are at least three quarters of the
-networks that rechecked there. Then:
+networks that rechecked there. Each draw is judged by the versions of the
+round it was drawn for, the one ending in its slot, even if a later round
+is current by the time it completes. Then:
 
 - two or more versions confirmed: **Split**. Independent networks really
   are served different content. A split is an observation, not an
@@ -528,7 +534,13 @@ networks that rechecked there. Then:
   well enough to have reproduced their version and didn't, a **failed
   claim** is recorded against the network prefix (/24, /48) this node saw
   each dissenter connect from. Networks with `quorum.max_failed_claims` (5)
-  in a week are left out of verdicts: keys are free, addresses aren't;
+  in a week are left out of verdicts: keys are free, addresses aren't.
+  Pages change, though, and a witness that captured a page a minute before
+  its publisher edited it saw a real version. So a version other networks
+  saw too, captured before any other network had seen the confirmed one,
+  is the page before an edit and costs nothing. A made-up version was
+  never served to anyone else; replaying an old one passes only in the
+  round right after a real change;
 - none confirmed: **Disputed**, and while rechecks may still arrive,
   Disputed (pending). A dissent from `min_dissent_asns` networks whose
   countries had too few witnesses to recheck also leaves the round
@@ -672,7 +684,20 @@ before public operation. The design aims to leave room for compliance.
   shouldn't ship evasion tooling beyond that.
 - **Windowing for split verdicts.** Ten minutes is a guess. Fast-moving
   pages (live blogs) need either a shorter window or site rules that
-  exclude the live section.
+  exclude the live section. Since 1.1.0 they also cost a recheck draw
+  every round: the assigned witnesses rarely capture the same version. A
+  round whose versions are cleanly ordered in time (every capture of one
+  before every capture of the other) looks like an edit, not a
+  disagreement, and could skip rechecks.
+- **Pages that aren't the same for everyone in a country.** Failed claims
+  assume rechecks in a country can reproduce what an honest witness there
+  saw. A/B tests with a small variant, and bot walls that challenge some
+  addresses but not others, break that: the witness that drew the variant
+  or the challenge is charged like a liar. Edits are exempt (§6.5), but
+  these aren't yet. Charging only versions no other network has seen
+  within the lookback would exempt them, at the price of letting two
+  colluding networks dispute forever; a per-URL backoff for rechecks would
+  bound that.
 - **Nodes without a public endpoint.** Nobody pushes to them, so they
   can't place other witnesses (§6.3) or compute verdicts. Recording where
   a node reached each peer's endpoint would give every node a first-hand

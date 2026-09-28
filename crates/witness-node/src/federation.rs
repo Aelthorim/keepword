@@ -1068,7 +1068,6 @@ impl Node {
     pub async fn refresh_url(&self, url: &str) -> Result<usize> {
         let url = target::canonical_url(url)?;
         let now = now_ms();
-        let me = self.key.public();
         let cands = self.candidates(now)?;
         let mut targets: HashSet<WitnessKey> = HashSet::new();
         let epoch = epoch_of(now);
@@ -1090,8 +1089,27 @@ impl Node {
                 targets.extend(self.recheckers(&url, end, &c, &cands));
             }
         }
-        targets.remove(&me);
-        let since = now - crate::consensus::LOOKBACK_MS;
+        let new = self
+            .fetch_attestations(&url, targets, now - crate::consensus::LOOKBACK_MS)
+            .await?;
+        self.sched
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_refresh
+            .insert(url.to_string(), now);
+        Ok(new)
+    }
+
+    /// Fetch the attestations `targets` made of `url` since `since` and
+    /// keep the valid ones. Returns how many were new.
+    pub(crate) async fn fetch_attestations(
+        &self,
+        url: &url::Url,
+        mut targets: HashSet<WitnessKey>,
+        since: i64,
+    ) -> Result<usize> {
+        let now = now_ms();
+        targets.remove(&self.key.public());
         let mut endpoints = Vec::new();
         for k in targets {
             if let Some(ep) = self.store.peer(&k)?.and_then(|p| p.endpoint) {
@@ -1130,11 +1148,6 @@ impl Node {
                 }
             }
         }
-        self.sched
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .last_refresh
-            .insert(url.to_string(), now);
         Ok(new)
     }
 

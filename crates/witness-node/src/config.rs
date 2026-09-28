@@ -177,8 +177,8 @@ pub struct QuorumConfig {
     pub split_rounds: usize,
     /// Most rechecks this node captures per hour.
     pub max_rechecks_per_hour: u64,
-    /// Versions from a network prefix whose claims failed rechecks this
-    /// often in a week no longer trigger new rechecks from this node.
+    /// Witnesses connecting from a network prefix (/24, /48) whose claims
+    /// failed rechecks this often in a week are left out of verdicts.
     pub max_failed_claims: u64,
 }
 

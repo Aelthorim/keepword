@@ -1112,6 +1112,16 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Forget a recheck this node skipped, so it doesn't count against the
+    /// hourly budget.
+    pub fn recheck_job_drop(&self, url: &str, window_end: i64) -> Result<()> {
+        self.db().execute(
+            "DELETE FROM recheck_jobs WHERE url = ?1 AND window_end = ?2",
+            params![url, window_end],
+        )?;
+        Ok(())
+    }
+
     pub fn recheck_job_done(&self, url: &str, window_end: i64, now_ms: i64) -> Result<()> {
         self.db().execute(
             "UPDATE recheck_jobs SET done_at = ?3 WHERE url = ?1 AND window_end = ?2",
