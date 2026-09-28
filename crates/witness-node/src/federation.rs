@@ -632,9 +632,18 @@ impl Node {
             .filter_map(|p| p.endpoint)
             .map(|e| e.trim_end_matches('/').to_string())
             .collect();
-        for boot in &self.config.network.peers {
-            if !known.contains(boot.trim_end_matches('/')) {
-                if let Err(e) = self.add_peer(boot).await {
+        // Configured peers are always dialed; seeds only until this node
+        // knows enough peers to gossip with.
+        let fanout = self.config.network.gossip_fanout;
+        for boot in self.config.network.bootstrap() {
+            let configured = self.config.network.peers.contains(&boot);
+            if known.contains(boot.trim_end_matches('/')) || (!configured && known.len() >= fanout)
+            {
+                continue;
+            }
+            if let Err(e) = self.add_peer(&boot).await {
+                // A seed being down doesn't matter once other peers answer.
+                if configured || known.is_empty() {
                     report.errors.push((boot.clone(), format!("{e:#}")));
                 }
             }
@@ -681,7 +690,6 @@ impl Node {
             })
             .collect();
         ranked.sort_by_key(|a| a.0);
-        let fanout = self.config.network.gossip_fanout;
         let targets: Vec<(Peer, bool)> = ranked
             .into_iter()
             .enumerate()
@@ -920,7 +928,7 @@ impl Node {
         let e = endpoint.trim_end_matches('/');
         self.config
             .network
-            .peers
+            .bootstrap()
             .iter()
             .any(|b| b.trim_end_matches('/') == e)
     }

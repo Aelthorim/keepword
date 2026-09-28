@@ -313,6 +313,9 @@ Nothing in a round grows with the size of the network, so the per-node
 cost stays about the same at 20 witnesses or 1000. Each round (every
 minute) a node:
 
+0. while it knows fewer peers than its gossip sample, dials its configured
+   peers and the built-in **seed witnesses** (`DEFAULT_SEEDS`, unless
+   `network.seeds = false` or the network is private);
 1. exchanges gossip with a **random sample** of peers
    (`network.gossip_fanout`, 16): refreshes each one's descriptor, pulls
    its outbox, pushes its own and gets an observation receipt (§6.3).

@@ -130,15 +130,23 @@ witness verify --bundle bundle.json                           # anywhere
 Withdraw the test request when you're done:
 `witness request https://www.example.org/ --cancel`.
 
-### Step 5: publish how to join
+### Step 5: make joining one command
 
-Publish the endpoints of two or three bootstrap witnesses run by different
-people, for example in your project's README. A newcomer joins with:
+Put the endpoints of two or three founding witnesses, ideally run by
+different people, into `DEFAULT_SEEDS` in
+`crates/witness-node/src/config.rs`. Every node built from the code then
+dials them when it knows few peers, so a newcomer joins with just:
 
 ```sh
-sudo sh scripts/install.sh --domain their.domain --caddy \
-    --peer https://w1.example.org --peer https://w2.example.net
+sudo sh scripts/install.sh --domain their.domain --caddy
 ```
+
+`--peer` still adds peers of your own choosing. Seeds are only used until a
+node knows enough peers, and never on a network with
+`network.allow_private_peers`, so a LAN test cluster can't wander into the
+public network. To run a **separate** network, set
+`witness config set network.seeds false` on every witness and bootstrap it
+with `--peer`.
 
 There is no registration and no central server. A new witness counts in
 verdicts once two others have observed it, and is assigned requests from

@@ -11,6 +11,11 @@ use witness_core::{Keypair, Vantage};
 use witness_normalize::SiteRules;
 
 pub const CONFIG_FILE: &str = "witness.toml";
+
+/// Witnesses a new node dials to join the public network when it knows
+/// few peers. Any witness works as a seed; these are ones run by the
+/// project. After joining, a node learns the rest through gossip.
+pub const DEFAULT_SEEDS: &[&str] = &[];
 pub const KEY_FILE: &str = "witness.key";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -42,8 +47,12 @@ pub struct NetworkConfig {
     /// Public base URL of this node's API. Leave unset for a node that can't
     /// accept connections; it still pushes and pulls but isn't mirrored.
     pub endpoint: Option<String>,
-    /// Peer base URLs to bootstrap from.
+    /// Peer base URLs to bootstrap from, in addition to the default seeds.
     pub peers: Vec<String>,
+    /// Also bootstrap from the project's default seeds (`DEFAULT_SEEDS`).
+    /// Turn off to run a separate network. Never used together with
+    /// `allow_private_peers`, so a LAN test network stays private.
+    pub seeds: bool,
     pub sync_interval_secs: u64,
     /// Witnesses assigned per watch request.
     pub replication: usize,
@@ -88,6 +97,7 @@ impl Default for NetworkConfig {
         NetworkConfig {
             endpoint: None,
             peers: vec![],
+            seeds: true,
             sync_interval_secs: 60,
             replication: 5,
             max_per_country: 2,
@@ -250,6 +260,27 @@ impl Default for ContentConfig {
         ContentConfig {
             retain: Retain::Full,
         }
+    }
+}
+
+impl NetworkConfig {
+    /// The peers to bootstrap from: `peers`, plus the default seeds unless
+    /// disabled or this is a private network.
+    pub fn bootstrap(&self) -> Vec<String> {
+        let own = self
+            .endpoint
+            .as_deref()
+            .map(|e| e.trim_end_matches('/').to_string());
+        let mut out: Vec<String> = self.peers.clone();
+        if self.seeds && !self.allow_private_peers {
+            out.extend(DEFAULT_SEEDS.iter().map(|s| s.to_string()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|p| {
+            let p = p.trim_end_matches('/').to_string();
+            Some(&p) != own.as_ref() && seen.insert(p)
+        });
+        out
     }
 }
 
@@ -429,6 +460,28 @@ mod tests {
         assert!(cfg.beacon.drand().is_some());
         let off: Config = toml::from_str("[beacon]\ndrand_url = \"\"\n").unwrap();
         assert!(off.beacon.drand().is_none());
+    }
+
+    #[test]
+    fn bootstrap_list() {
+        let mut n = NetworkConfig {
+            endpoint: Some("https://me.example/".into()),
+            peers: vec![
+                "https://a.example".into(),
+                "https://a.example/".into(),
+                "https://me.example".into(),
+            ],
+            ..Default::default()
+        };
+        let with_seeds = n.bootstrap();
+        assert_eq!(with_seeds[0], "https://a.example");
+        assert_eq!(with_seeds.len(), 1 + DEFAULT_SEEDS.len());
+        n.seeds = false;
+        assert_eq!(n.bootstrap(), vec!["https://a.example".to_string()]);
+        // A private network never dials the public seeds.
+        n.seeds = true;
+        n.allow_private_peers = true;
+        assert_eq!(n.bootstrap(), vec!["https://a.example".to_string()]);
     }
 
     #[test]
