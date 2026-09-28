@@ -324,10 +324,33 @@ Each round, for each peer with an endpoint, a node:
 6. pulls the peer's outbox, pushes its own, and receives an observation
    receipt (§6.3).
 
-Gossip messages (descriptors, watch requests, tree heads, cosignatures,
-observations, alerts, equivocation proofs, drand beacons) are all signed
-statements with content-derived IDs. They are deduplicated by ID, validated
-(signature, clock skew, rate limits), stored and forwarded.
+Gossip messages (descriptors, watch requests and cancellations, tree heads,
+cosignatures, observations, alerts, equivocation proofs, drand beacons,
+TLSNotary receipts) are all signed statements with content-derived IDs.
+They are deduplicated by ID, validated (signature, clock skew, rate
+limits), stored and forwarded. Message kinds a node doesn't know are
+skipped, not fatal, so nodes can be upgraded one at a time.
+
+Keys cost nothing, so a node limits what strangers can make it store:
+
+- **Only descriptors and beacons are accepted from anyone.** Every other
+  message must be signed by a witness in the peer table (or by the node
+  itself). The table is capped (`network.max_peers`), so flooding alerts,
+  requests or receipts first means getting into it.
+- **A full peer table evicts the least useful peer** to admit a new one
+  with an endpoint: an equivocating log first, then peers without an
+  endpoint, then peers that never synced within an hour of being learned
+  or haven't synced for a day. Healthy peers are never evicted, and an
+  evicted peer's mirrored log is kept, so it is re-checked for consistency
+  if it returns. Descriptors older than seven days are ignored.
+- **Beacons older than three days are refused.** Every historical drand
+  beacon verifies, and there are millions.
+- Peers are synced eight at a time, and a peer whose last sync failed is
+  retried after ten minutes, so dead peers can't stall a round.
+
+Peer endpoints come from untrusted descriptors, so the peer client refuses
+private and loopback addresses, including IP literals and redirect targets,
+unless `network.allow_private_peers` is set for a closed LAN network.
 
 ### 6.3 Vantage corroboration
 
@@ -357,7 +380,23 @@ The **epoch seed** is the drand quicknet beacon at the start of the UTC day,
 verified offline with BLS. Beacons also travel over gossip, so nodes
 without drand access can still use them. Only assigned witnesses add the
 URL to their watchlist; the watch disappears when the request expires or
-the assignment moves.
+the assignment moves. Several requests for one URL share one watch at the
+shortest interval any of them asks for.
+
+A requester can withdraw a request with a signed **cancellation**
+(`witness request URL --cancel`). Nodes drop the request and remember the
+cancellation until the request would have expired, so a peer re-sending it
+can't revive it. Asking again for a URL you already requested replaces
+your earlier request, which is how the interval changes. Captures already
+made stay in the witnesses' logs.
+
+Operators keep control of what their node fetches for others:
+`network.decline_hosts` lists hosts it never captures for requests (they
+are still relayed), `network.max_request_watches` caps how many URLs it
+captures for the network, and rendered requests are only rendered with
+`network.render_requests`, because Chromium resolves sub-resources itself,
+past the node's public-address checks. Without it the node captures such
+requests over plain HTTP.
 
 Assignment is only as consistent as nodes' views of the membership. After
 a few sync rounds they converge. Divergent views mean a URL briefly has
@@ -374,8 +413,11 @@ comparison hash, and counts distinct corroborated ASNs, never keys:
   `min_dissent_asns`. Group members earn +1 reputation per URL and window;
   dissenters get −3.
 - **Split**: two or more groups each reach `min_dissent_asns`. Independent
-  networks were served different content at the same moment: cloaking,
-  geo-targeting or an A/B test. A **split alert** is raised and flooded.
+  networks were served different content at the same moment. A **split
+  alert** is raised and flooded. A split is an observation, not an
+  accusation: localization, A/B tests, a rollout in progress and bot
+  blocking all cause them, as does cloaking. People decide which by
+  comparing the versions.
 - **Insufficient**: anything else.
 
 Reputation decays with a 14-day half-life, so it takes sustained agreement
@@ -494,9 +536,11 @@ before public operation. The design aims to leave room for compliance.
 - **Windowing for split verdicts.** Ten minutes is a guess. Fast-moving
   pages (live blogs) need either a shorter window or site rules that
   exclude the live section.
-- **Who can request watches.** Today it is any key, capped at 50 active
-  requests each, with intervals ≥ 10 min. That is cheap to Sybil. Per-key
-  token buckets with tokens earned by attesting would be better.
+- **Who can request watches.** Today it is any witness in the peer table,
+  capped at 50 active requests each, with intervals ≥ 10 min, and each node
+  captures at most `max_request_watches` URLs. Running many witnesses is
+  still cheap. Per-key token buckets with tokens earned by attesting, or
+  requests counted per corroborated ASN, would be better.
 - **Membership consistency.** Assignment depends on each node's view of the
   witness set. Views converge through gossip, but a signed, epoch-pinned
   membership snapshot would make assignment exactly reproducible for

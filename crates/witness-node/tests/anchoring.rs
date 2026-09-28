@@ -125,6 +125,7 @@ async fn beacon_and_bitcoin_anchor() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::default();
     cfg.capture.allow_private_addresses = true;
+    cfg.network.allow_private_peers = true;
     cfg.beacon.drand_url = Some(base.clone());
     cfg.anchor.calendars = vec![base.clone()];
     cfg.anchor.esplora_url = Some(base.clone());
@@ -210,6 +211,7 @@ async fn forged_beacon_fails() {
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = Config::default();
     cfg.capture.allow_private_addresses = true;
+    cfg.network.allow_private_peers = true;
     cfg.beacon.drand_url = None;
     cfg.anchor.calendars = vec![];
     Node::init(dir.path(), &cfg).unwrap();

@@ -53,9 +53,23 @@ pub struct NetworkConfig {
     pub max_peers: usize,
     /// Serve raw blobs to peers, for these hosts only (and their subdomains).
     pub serve_content_hosts: Vec<String>,
-    /// Use the first X-Forwarded-For address as the client IP (only behind a
-    /// reverse proxy you control).
+    /// Use the last X-Forwarded-For address, the one your proxy added, as
+    /// the client IP (only behind a reverse proxy you control).
     pub trust_forwarded_for: bool,
+    /// Let peers and network services (drand, calendars, Esplora) be on
+    /// private addresses. Peer endpoints come from untrusted descriptors, so
+    /// only enable this for a closed network on a LAN.
+    pub allow_private_peers: bool,
+    /// Never capture these hosts (and their subdomains) for network
+    /// requests, e.g. for legal reasons. Requests are still relayed.
+    pub decline_hosts: Vec<String>,
+    /// Render network requests that ask for it in the headless browser.
+    /// Chromium resolves sub-resources itself, past this node's
+    /// public-address checks, so only enable it with the browser sandboxed
+    /// away from your LAN.
+    pub render_requests: bool,
+    /// Most URLs this node captures for the network at once.
+    pub max_request_watches: usize,
 }
 
 impl Default for NetworkConfig {
@@ -70,6 +84,10 @@ impl Default for NetworkConfig {
             max_peers: 500,
             serve_content_hosts: vec![],
             trust_forwarded_for: false,
+            allow_private_peers: false,
+            decline_hosts: vec![],
+            render_requests: false,
+            max_request_watches: 200,
         }
     }
 }

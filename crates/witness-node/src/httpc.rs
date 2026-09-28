@@ -9,14 +9,17 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use witness_capture::netpolicy::PublicOnlyResolver;
+use witness_capture::netpolicy::{PublicOnlyResolver, is_public};
 
 pub const MAX_RESPONSE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Http {
     client: reqwest::Client,
+    allow_private: bool,
 }
+
+const MAX_REDIRECTS: usize = 5;
 
 impl Http {
     pub fn new(allow_private: bool, use_system_proxy: bool) -> Result<Self> {
@@ -27,10 +30,39 @@ impl Http {
         if !use_system_proxy {
             b = b.no_proxy();
         }
-        if !allow_private {
-            b = b.dns_resolver(Arc::new(PublicOnlyResolver));
+        if allow_private {
+            b = b.redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS));
+        } else {
+            // The resolver only sees host names; IP literals, including
+            // those in redirects, are checked here.
+            b = b.dns_resolver(Arc::new(PublicOnlyResolver)).redirect(
+                reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.previous().len() >= MAX_REDIRECTS {
+                        attempt.error("too many redirects")
+                    } else if let Err(e) = check_public(attempt.url()) {
+                        attempt.error(e.to_string())
+                    } else {
+                        attempt.follow()
+                    }
+                }),
+            );
         }
-        Ok(Http { client: b.build()? })
+        Ok(Http {
+            client: b.build()?,
+            allow_private,
+        })
+    }
+
+    /// Refuse non-HTTP schemes and, unless allowed, private IP literals.
+    fn check(&self, url: &str) -> Result<()> {
+        let u = reqwest::Url::parse(url).with_context(|| format!("bad URL {url:?}"))?;
+        if u.scheme() != "http" && u.scheme() != "https" {
+            bail!("{url}: only http(s) URLs are allowed");
+        }
+        if !self.allow_private {
+            check_public(&u)?;
+        }
+        Ok(())
     }
 
     async fn read(resp: reqwest::Response, max: usize) -> Result<Vec<u8>> {
@@ -54,6 +86,7 @@ impl Http {
     }
 
     pub async fn get_bytes(&self, url: &str, max: usize) -> Result<Vec<u8>> {
+        self.check(url)?;
         let resp = self
             .client
             .get(url)
@@ -72,6 +105,7 @@ impl Http {
         accept: &str,
         max: usize,
     ) -> Result<Vec<u8>> {
+        self.check(url)?;
         let resp = self
             .client
             .post(url)
@@ -95,6 +129,7 @@ impl Http {
         url: &str,
         body: &B,
     ) -> Result<T> {
+        self.check(url)?;
         let resp = self
             .client
             .post(url)
@@ -108,6 +143,20 @@ impl Http {
             .with_context(|| format!("POST {url}"))?;
         serde_json::from_slice(&b).with_context(|| format!("decoding {url}"))
     }
+}
+
+fn check_public(u: &reqwest::Url) -> Result<()> {
+    let ip = match u.host() {
+        Some(url::Host::Ipv4(v4)) => std::net::IpAddr::V4(v4),
+        Some(url::Host::Ipv6(v6)) => std::net::IpAddr::V6(v6),
+        _ => return Ok(()),
+    };
+    if !is_public(ip) {
+        bail!(
+            "{ip} is not a public address (set network.allow_private_peers for a private network)"
+        );
+    }
+    Ok(())
 }
 
 /// A non-2xx response, so callers can tell "not found" from failures.
@@ -135,4 +184,31 @@ pub fn join(base: &str, path: &str) -> String {
         base.trim_end_matches('/'),
         path.trim_start_matches('/')
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn refuses_private_ip_literals() {
+        let h = Http::new(false, false).unwrap();
+        for url in [
+            "http://127.0.0.1:1/v1/descriptor",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]:8481/",
+            "http://10.0.0.12:8481/v1/peers",
+            "file:///etc/passwd",
+        ] {
+            let e = h.get_bytes(url, 10).await.unwrap_err();
+            let msg = format!("{e:#}");
+            assert!(
+                msg.contains("not a public address") || msg.contains("only http(s)"),
+                "{url}: {msg}"
+            );
+        }
+        // Host names still go through the public-only resolver.
+        let e = h.get_bytes("http://localhost:1/", 10).await.unwrap_err();
+        assert!(format!("{e:#}").contains("non-public"), "{e:#}");
+    }
 }

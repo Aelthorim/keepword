@@ -4515,6 +4515,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "futures",
  "hex",
  "humantime",
  "libc",

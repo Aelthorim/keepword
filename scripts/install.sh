@@ -518,9 +518,17 @@ if [ -n "$PEERS" ]; then
     witness config set network.peers "[$list]"
     info "bootstrap peers:$PEERS"
 fi
-if [ -z "$(witness config get network.endpoint)" ] && [ -z "$PEERS" ] && [ "$UPGRADE" -eq 0 ]; then
-    info "standalone node (no endpoint or peers); add them later with"
-    info "  witness config set network.endpoint https://your.domain"
+if [ -z "$(witness config get network.endpoint)" ]; then
+    if [ -n "$PUBLIC_API" ]; then
+        warn "the API listens on $PUBLIC_API, but no endpoint is advertised, so peers"
+        warn "can't mirror this node and it is never assigned requests. Re-run with"
+        warn "  --endpoint https://your.domain:${PUBLIC_API##*:}   (public network)"
+        warn "  --endpoint http://this-node-ip:${PUBLIC_API##*:}   (private test network)"
+    elif [ -z "$PEERS" ] && [ "$UPGRADE" -eq 0 ]; then
+        info "standalone node (no endpoint or peers); join a network later with"
+        info "  witness config set network.endpoint https://your.domain"
+        info "  witness config set network.peers '[\"https://a.peer.example\"]'"
+    fi
 fi
 if [ "$RENDER" -eq 1 ]; then
     for c in chromium chromium-browser google-chrome; do
@@ -782,8 +790,9 @@ EOF
 cat <<EOF
 
     Next steps:
+      witness net status          (lists anything keeping this node out of the network)
       witness watch add https://example.org/terms --every 6h
-      witness net status
       witness config show
+    Starting or joining a network: docs/NETWORK.md
     ${DIM}(run witness commands as the service user: sudo -u $SVC_USER WITNESS_DIR=$DATA_DIR witness …)${RESET}
 EOF
