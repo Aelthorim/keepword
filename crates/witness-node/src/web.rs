@@ -226,6 +226,12 @@ async fn url_page(
     let raw = p.get("u").ok_or_else(|| not_found("url parameter"))?;
     let url = target::canonical_url(raw)?;
     let hist = node.store.history(url.as_str())?;
+    // Best effort: fetch the assigned witnesses' latest captures first.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        node.refresh_url(url.as_str()),
+    )
+    .await;
     let verdict = node.verdict(url.as_str())?;
     if hist.is_empty() && verdict.considered == 0 {
         return Err(not_found("captures for this URL"));
@@ -521,7 +527,7 @@ async fn network_page(State(node): State<Arc<Node>>) -> WebResult<Html<String>> 
     ));
     let bad = node.store.equivocating_logs()?;
     let scores = node.store.reputation_scores(now)?;
-    b.push_str("<div class=wrap><table><tr><th>Witness</th><th>Endpoint</th><th>Location</th><th>Log</th><th>Reputation</th><th>Last sync</th><th>Status</th></tr>");
+    b.push_str("<div class=wrap><table><tr><th>Witness</th><th>Endpoint</th><th>Location</th><th>Audited log</th><th>Reputation</th><th>Last sync</th><th>Status</th></tr>");
     for p in node.store.peers()? {
         let loc = node.location_of(&p.key, now)?;
         let status = if bad.contains(&p.key) {
@@ -534,7 +540,9 @@ async fn network_page(State(node): State<Arc<Node>>) -> WebResult<Html<String>> 
             p.key.short(),
             esc(p.endpoint.as_deref().unwrap_or("-")),
             loc.map(|l| esc(&l.to_string())).unwrap_or_else(|| "unknown".into()),
-            p.head.as_ref().map_or(0, |h| h.head.size),
+            p.head
+                .as_ref()
+                .map_or("-".to_string(), |h| h.head.size.to_string()),
             scores.get(&p.key).copied().unwrap_or(0.0),
             p.last_sync.map(format_ms).unwrap_or_else(|| "never".into()),
             status

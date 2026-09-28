@@ -41,10 +41,10 @@ pub struct Node {
     /// Client for peers and external services.
     pub net: httpc::Http,
     pub asn_db: Option<vantage::AsnDb>,
-    /// This node's descriptor for the current run.
     /// This node's signed descriptor; see `Node::descriptor`.
     descriptor: Mutex<witness_core::statement::Signed<witness_core::net::Descriptor>>,
     seen_envelopes: Mutex<HashMap<Digest, i64>>,
+    sched: Mutex<federation::Schedule>,
 }
 
 /// Result of one capture.
@@ -113,6 +113,7 @@ impl Node {
             asn_db,
             descriptor: Mutex::new(placeholder),
             seen_envelopes: Mutex::new(HashMap::new()),
+            sched: Mutex::new(Default::default()),
         };
         node.descriptor = Mutex::new(node.build_descriptor()?);
         Ok(node)

@@ -13,7 +13,7 @@
 //!
 //! Gossip messages are self-authenticating, so they flood through any peer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,7 +25,7 @@ use witness_core::net::{
     WatchRequest, payload_digest,
 };
 use witness_core::statement::Signed;
-use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, merkle, now_ms, target};
+use witness_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, now_ms, target};
 use witness_store::net::{Peer, RequestWatch};
 
 use crate::Node;
@@ -49,7 +49,11 @@ const BEACON_MAX_AGE_MS: i64 = 3 * 86_400_000;
 const SYNC_CONCURRENCY: usize = 8;
 /// How long to wait before retrying a peer whose last sync failed.
 const RETRY_MS: i64 = 10 * 60_000;
-const PAGE: usize = 1000;
+/// How often a peer's full peer list is fetched; gossip covers the rest.
+const PEER_LIST_EVERY_MS: i64 = 86_400_000;
+/// A node re-issues an observation of the same peer at the same address
+/// at most this often. Observations are valid for 30 days.
+const OBSERVATION_REFRESH_MS: i64 = 7 * 86_400_000;
 const GOSSIP_PAGE: u32 = 500;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,7 +99,9 @@ pub struct IdList {
 pub struct SyncReport {
     pub peers: usize,
     pub synced: usize,
-    pub new_leaves: u64,
+    /// Logs audited this round.
+    pub audited: usize,
+    /// Attestations fetched for followed URLs.
     pub new_attestations: usize,
     pub gossip_in: usize,
     pub gossip_out: usize,
@@ -104,10 +110,21 @@ pub struct SyncReport {
 
 #[derive(Debug, Default)]
 struct PeerStats {
-    new_leaves: u64,
-    new_attestations: usize,
     gossip_in: usize,
     gossip_out: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ConsistencyProof {
+    proof: Vec<Digest>,
+}
+
+/// In-memory timers for work that isn't done every round.
+#[derive(Debug, Default)]
+pub(crate) struct Schedule {
+    last_audit: HashMap<WitnessKey, i64>,
+    last_refresh: HashMap<String, i64>,
+    last_prune: i64,
 }
 
 impl Node {
@@ -185,11 +202,17 @@ impl Node {
                         }
                     }
                 }
+                if let Some(other) = self.store.log_head_insert(h, now)? {
+                    self.record_equivocation(&other, h)?;
+                }
                 true
             }
+            // Cosignatures go straight to the log they cover (see
+            // `audit_log`); older nodes still gossip them, so keep ours
+            // and don't pass them on.
             Gossip::Cosignature(c) => {
-                self.store.cosig_insert(c)?;
-                true
+                self.receive_cosignature(c)?;
+                false
             }
             Gossip::Observation(o) => {
                 if o.body.observed_at_ms > now + SKEW_MS {
@@ -553,11 +576,53 @@ impl Node {
         Ok(d)
     }
 
-    /// One federation round with every reachable peer.
+    /// This node's current checkpoint: the latest head signed before the
+    /// start of the current checkpoint interval. Auditors that come by
+    /// during the interval all see, and cosign, the same head.
+    pub fn checkpoint(&self) -> Result<Option<SignedTreeHead>> {
+        let every = self.config.network.checkpoint_interval_secs as i64 * 1000;
+        if every == 0 {
+            return Ok(self.store.latest_tree_head()?);
+        }
+        let now = now_ms();
+        Ok(self.store.tree_head_before(now - now.rem_euclid(every))?)
+    }
+
+    /// The logs this node currently audits.
+    pub fn audited_logs_now(&self) -> Result<HashSet<WitnessKey>> {
+        let bad = self.store.equivocating_logs()?;
+        let peers: Vec<Peer> = self
+            .store
+            .peers()?
+            .into_iter()
+            .filter(|p| p.endpoint.is_some() && !bad.contains(&p.key))
+            .collect();
+        Ok(self.audited_logs(&peers))
+    }
+
+    /// The peers whose logs this node audits (see `assign::auditors`).
+    fn audited_logs(&self, peers: &[Peer]) -> HashSet<WitnessKey> {
+        let me = self.key.public();
+        let mut members: Vec<WitnessKey> = peers.iter().map(|p| p.key).collect();
+        members.push(me);
+        peers
+            .iter()
+            .filter(|p| {
+                assign::auditors(&p.key, &members, self.config.network.audit_logs).contains(&me)
+            })
+            .map(|p| p.key)
+            .collect()
+    }
+
+    /// One federation round: exchange gossip with a random sample of peers,
+    /// audit the logs this node audits when due, fetch other witnesses'
+    /// attestations for the URLs it follows, and prune old data.
     pub async fn sync(&self) -> Result<SyncReport> {
         let mut report = SyncReport::default();
         self.publish(Gossip::Descriptor(self.descriptor()))?;
-        if let Some(h) = self.store.latest_tree_head()? {
+        // Only checkpoints travel, and gossip deduplicates them, so this is
+        // one message per interval however often the node syncs.
+        if let Some(h) = self.checkpoint()? {
             self.publish(Gossip::TreeHead(h))?;
         }
         let known: HashSet<String> = self
@@ -576,30 +641,79 @@ impl Node {
         }
         let bad = self.store.equivocating_logs()?;
         let now = now_ms();
-        let due: Vec<Peer> = self
+        let peers: Vec<Peer> = self
             .store
             .peers()?
             .into_iter()
             .filter(|p| p.endpoint.is_some() && !bad.contains(&p.key))
-            // Back off from peers whose last attempt failed.
+            .collect();
+        let audit_every = self.config.network.cosign_interval_secs as i64 * 1000;
+        let due_audit: HashSet<WitnessKey> = {
+            let sched = self.sched.lock().unwrap_or_else(|p| p.into_inner());
+            self.audited_logs(&peers)
+                .into_iter()
+                .filter(|k| {
+                    sched
+                        .last_audit
+                        .get(k)
+                        .is_none_or(|t| now - t >= audit_every)
+                })
+                .collect()
+        };
+        // Back off from peers whose last attempt failed.
+        let reachable: Vec<Peer> = peers
+            .into_iter()
             .filter(|p| p.last_error.is_none() || p.last_sync.is_none_or(|t| now - t >= RETRY_MS))
             .collect();
-        report.peers = due.len();
+        // A fresh random sample each round for gossip, plus the logs due
+        // for an audit.
+        let nonce = Digest::tagged(
+            "witness fanout v1",
+            &[&now.to_be_bytes(), &self.key.public().0],
+        );
+        let mut ranked: Vec<(Digest, Peer)> = reachable
+            .into_iter()
+            .map(|p| {
+                (
+                    Digest::tagged("witness fanout v1", &[nonce.as_bytes(), &p.key.0]),
+                    p,
+                )
+            })
+            .collect();
+        ranked.sort_by(|a, b| a.0.cmp(&b.0));
+        let fanout = self.config.network.gossip_fanout;
+        let targets: Vec<(Peer, bool)> = ranked
+            .into_iter()
+            .enumerate()
+            .filter(|(i, (_, p))| *i < fanout || due_audit.contains(&p.key))
+            .map(|(_, (_, p))| {
+                let audit = due_audit.contains(&p.key);
+                (p, audit)
+            })
+            .collect();
+        report.peers = targets.len();
+        let want_peers = known.len() < 2 * fanout.max(1);
         use futures::StreamExt;
-        let mut results = futures::stream::iter(due)
-            .map(|peer| async move {
-                let r = self.sync_peer(&peer).await;
-                (peer, r)
+        let mut results = futures::stream::iter(targets)
+            .map(|(peer, audit)| async move {
+                let r = self.sync_peer(&peer, audit, want_peers).await;
+                (peer, audit, r)
             })
             .buffer_unordered(SYNC_CONCURRENCY);
-        while let Some((peer, r)) = results.next().await {
+        while let Some((peer, audit, r)) = results.next().await {
             match r {
                 Ok(s) => {
                     report.synced += 1;
-                    report.new_leaves += s.new_leaves;
-                    report.new_attestations += s.new_attestations;
                     report.gossip_in += s.gossip_in;
                     report.gossip_out += s.gossip_out;
+                    if audit {
+                        report.audited += 1;
+                        self.sched
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .last_audit
+                            .insert(peer.key, now);
+                    }
                     self.store.peer_mark_sync(&peer.key, now_ms(), None)?;
                 }
                 Err(e) => {
@@ -610,14 +724,13 @@ impl Node {
             }
         }
         self.reconcile_requests().await?;
+        report.new_attestations = self.refresh_followed().await?;
         self.review_verdicts()?;
-        let now = now_ms();
-        self.store
-            .gossip_prune(now - 7 * 86_400_000, now - MAX_REQUEST_MS - 86_400_000)?;
+        self.prune_if_due()?;
         Ok(report)
     }
 
-    async fn sync_peer(&self, peer: &Peer) -> Result<PeerStats> {
+    async fn sync_peer(&self, peer: &Peer, audit: bool, want_peers: bool) -> Result<PeerStats> {
         let ep = peer
             .endpoint
             .as_deref()
@@ -633,14 +746,25 @@ impl Node {
             stats.gossip_in += 1;
         }
 
-        let others: Vec<Signed<Descriptor>> = self.net.get_json(&join(ep, "/v1/peers")).await?;
-        for o in others.into_iter().take(self.config.network.max_peers) {
-            if self.ingest(Gossip::Descriptor(o))? {
-                stats.gossip_in += 1;
+        // Descriptors spread over gossip. The full list is only fetched
+        // while this node knows few peers, or daily from bootstrap peers.
+        if want_peers
+            || (self.is_bootstrap(ep)
+                && peer
+                    .last_ok
+                    .is_none_or(|t| now_ms() - t >= PEER_LIST_EVERY_MS))
+        {
+            let others: Vec<Signed<Descriptor>> = self.net.get_json(&join(ep, "/v1/peers")).await?;
+            for o in others.into_iter().take(self.config.network.max_peers) {
+                if self.ingest(Gossip::Descriptor(o))? {
+                    stats.gossip_in += 1;
+                }
             }
         }
 
-        self.mirror_log(peer, ep, &mut stats).await?;
+        if audit {
+            self.audit_log(peer, ep).await?;
+        }
 
         // Pull their outbox.
         let mut after = peer.pulled_seq;
@@ -704,20 +828,19 @@ impl Node {
         Ok(stats)
     }
 
-    /// Mirror a peer's log and attestations, verifying the tree head covers
-    /// exactly the leaves we hold plus the new ones; then cosign it.
-    async fn mirror_log(&self, peer: &Peer, ep: &str, stats: &mut PeerStats) -> Result<()> {
-        let head: SignedTreeHead = match self.net.get_json(&join(ep, "/v1/log/head")).await {
+    /// Audit a peer's log: fetch its checkpoint, check that it extends the
+    /// last one this node verified (a consistency proof, not a copy of the
+    /// log), then cosign it and hand the cosignature to the log.
+    async fn audit_log(&self, peer: &Peer, ep: &str) -> Result<()> {
+        let head: SignedTreeHead = match self.net.get_json(&join(ep, "/v1/log/checkpoint")).await {
             Ok(h) => h,
             Err(e) if status_of(&e) == Some(404) => return Ok(()),
             Err(e) => return Err(e),
         };
-        head.verify().context("tree head signature")?;
+        head.verify().context("checkpoint signature")?;
         if head.head.log != peer.key {
-            bail!("tree head is for a different log");
+            bail!("checkpoint is for a different log");
         }
-        let mut ids = self.store.peer_leaf_ids(&peer.key)?;
-        let have = ids.len() as u64;
         if let Some(known) = &peer.head {
             if known.is_equivocation_with(&head) {
                 self.record_equivocation(known, &head)?;
@@ -726,73 +849,51 @@ impl Node {
                     head.head.size
                 );
             }
-            if head.head.size < known.head.size {
-                bail!(
-                    "peer's log shrank from {} to {}",
-                    known.head.size,
-                    head.head.size
-                );
+            if head.head.size != known.head.size {
+                // Normally the checkpoint grew. It can also be older than
+                // the head this node last saw (checkpoints lag the log);
+                // then it must be a prefix of that head.
+                let (old, new) = if head.head.size > known.head.size {
+                    (known, &head)
+                } else {
+                    (&head, known)
+                };
+                let c: ConsistencyProof = self
+                    .net
+                    .get_json(&join(
+                        ep,
+                        &format!(
+                            "/v1/log/consistency?old={}&new={}",
+                            old.head.size, new.head.size
+                        ),
+                    ))
+                    .await?;
+                old.verify_extension(new, &c.proof).map_err(|_| {
+                    anyhow!(
+                        "log heads of size {} and {} are not consistent: the peer rewrote history or served a bad proof",
+                        old.head.size,
+                        new.head.size
+                    )
+                })?;
             }
         }
-        if head.head.size < have {
-            bail!("peer's log is shorter than what it showed us before");
+        if peer
+            .head
+            .as_ref()
+            .is_none_or(|k| head.head.size > k.head.size)
+        {
+            self.store.peer_set_head(&peer.key, &head)?;
         }
-        let mut new_ids = Vec::new();
-        let mut start = have;
-        while start < head.head.size {
-            let end = (start + PAGE as u64).min(head.head.size);
-            let page: Vec<Digest> = self
-                .net
-                .get_json(&join(
-                    ep,
-                    &format!("/v1/log/leaves?start={start}&end={end}"),
-                ))
-                .await?;
-            if page.is_empty() || page.len() as u64 > end - start {
-                bail!("bad leaf page {start}..{end}");
-            }
-            start += page.len() as u64;
-            new_ids.extend(page);
-        }
-        ids.extend_from_slice(&new_ids);
-        let leaves: Vec<Digest> = ids
-            .iter()
-            .map(|id| merkle::leaf_hash(id.as_bytes()))
-            .collect();
-        if merkle::root(&leaves) != head.head.root {
+        if let Some(other) = self.store.log_head_insert(&head, now_ms())? {
+            self.record_equivocation(&other, &head)?;
             bail!(
-                "tree head does not match the log's leaves; the peer rewrote history or served bad leaves"
+                "peer equivocated: another auditor saw a different log of size {}",
+                head.head.size
             );
         }
-        if !new_ids.is_empty() {
-            self.store.peer_extend_log(&peer.key, &new_ids, &head)?;
-            stats.new_leaves = new_ids.len() as u64;
-        } else if peer.head.as_ref() != Some(&head) {
-            self.store.peer_extend_log(&peer.key, &[], &head)?;
-        }
-
-        for chunk in new_ids.chunks(200) {
-            let wanted: HashSet<Digest> = chunk.iter().copied().collect();
-            let got: Vec<SignedAttestation> = self
-                .net
-                .post_json(
-                    &join(ep, "/v1/attestations"),
-                    &IdList {
-                        ids: chunk.to_vec(),
-                    },
-                )
-                .await?;
-            for sa in got {
-                if sa.attestation.witness == peer.key
-                    && sa.verify().is_ok()
-                    && wanted.contains(&sa.id())
-                    && self.store.foreign_insert(&sa)?
-                {
-                    stats.new_attestations += 1;
-                }
-            }
-        }
-
+        // Tell the network which checkpoint this node saw. Everyone who saw
+        // the same one sends the same message, so it's deduplicated.
+        self.publish(Gossip::TreeHead(head.clone()))?;
         if head.head.size > 0 {
             let c = Signed::sign(
                 Cosignature {
@@ -804,10 +905,152 @@ impl Node {
                 },
                 &self.key,
             )?;
-            if self.store.cosig_insert(&c)? {
-                self.publish(Gossip::Cosignature(c))?;
+            self.store.cosig_insert(&c)?;
+            // Only the log needs it, to put in its bundles. Sent on every
+            // audit: the log may not have known this node the last time.
+            self.net
+                .post_json::<_, serde_json::Value>(&join(ep, "/v1/cosignatures"), &c)
+                .await
+                .context("delivering cosignature")?;
+        }
+        Ok(())
+    }
+
+    fn is_bootstrap(&self, endpoint: &str) -> bool {
+        let e = endpoint.trim_end_matches('/');
+        self.config
+            .network
+            .peers
+            .iter()
+            .any(|b| b.trim_end_matches('/') == e)
+    }
+
+    /// Accept a cosignature of this node's own log from one of its peers.
+    pub fn receive_cosignature(&self, c: &Signed<Cosignature>) -> Result<bool> {
+        let b = &c.body;
+        if c.verify().is_err()
+            || b.log != self.key.public()
+            || b.cosigner == b.log
+            || self.store.peer(&b.cosigner)?.is_none()
+        {
+            return Ok(false);
+        }
+        match self.store.tree_head_at(b.size)? {
+            Some(h) if h.head.root == b.root => Ok(self.store.cosig_insert(c)?),
+            _ => Ok(false),
+        }
+    }
+
+    /// Fetch the attestations the witnesses assigned to `url` (this epoch
+    /// and last) made of it recently. Returns how many were new.
+    pub async fn refresh_url(&self, url: &str) -> Result<usize> {
+        let url = target::canonical_url(url)?;
+        let now = now_ms();
+        let me = self.key.public();
+        let cands = self.candidates(now)?;
+        let mut targets: HashSet<WitnessKey> = HashSet::new();
+        let epoch = epoch_of(now);
+        for e in [epoch, epoch.saturating_sub(1)] {
+            if let Ok((seed, _)) = self.epoch_seed_cached(e) {
+                targets.extend(
+                    self.assigned_among(&seed, &url, &cands)
+                        .iter()
+                        .map(|c| c.key),
+                );
             }
         }
+        targets.remove(&me);
+        let since = now - crate::consensus::LOOKBACK_MS;
+        let mut endpoints = Vec::new();
+        for k in targets {
+            if let Some(ep) = self.store.peer(&k)?.and_then(|p| p.endpoint) {
+                endpoints.push((k, ep));
+            }
+        }
+        use futures::StreamExt;
+        let fetched: Vec<(WitnessKey, Result<Vec<SignedAttestation>>)> =
+            futures::stream::iter(endpoints)
+                .map(|(k, ep)| {
+                    let url = url.clone();
+                    async move {
+                        let mut u = match url::Url::parse(&join(&ep, "/v1/attestations")) {
+                            Ok(u) => u,
+                            Err(e) => return (k, Err(e.into())),
+                        };
+                        u.query_pairs_mut()
+                            .append_pair("url", url.as_str())
+                            .append_pair("since", &since.to_string());
+                        (k, self.net.get_json(u.as_str()).await)
+                    }
+                })
+                .buffer_unordered(SYNC_CONCURRENCY)
+                .collect()
+                .await;
+        let mut new = 0;
+        for (k, r) in fetched {
+            for sa in r.unwrap_or_default() {
+                if sa.attestation.witness == k
+                    && sa.attestation.url == url.as_str()
+                    && sa.verify().is_ok()
+                    && self.store.foreign_insert(&sa)?
+                {
+                    new += 1;
+                }
+            }
+        }
+        self.sched
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .last_refresh
+            .insert(url.to_string(), now);
+        Ok(new)
+    }
+
+    /// Refresh the URLs this node follows: those it captures for the
+    /// network and those it requested, at most once per quorum window.
+    async fn refresh_followed(&self) -> Result<usize> {
+        let now = now_ms();
+        let mut urls: HashSet<String> = self
+            .store
+            .watches()?
+            .into_iter()
+            .filter(|w| w.request_id.is_some())
+            .map(|w| w.url)
+            .collect();
+        urls.extend(
+            self.store
+                .requests_by(&self.key.public(), now)?
+                .into_iter()
+                .map(|r| r.body.url),
+        );
+        let every = (self.config.quorum.window_secs as i64 * 1000).max(60_000);
+        let due: Vec<String> = {
+            let sched = self.sched.lock().unwrap_or_else(|p| p.into_inner());
+            urls.into_iter()
+                .filter(|u| sched.last_refresh.get(u).is_none_or(|t| now - t >= every))
+                .collect()
+        };
+        let mut new = 0;
+        for u in due {
+            new += self.refresh_url(&u).await.unwrap_or(0);
+        }
+        Ok(new)
+    }
+
+    /// Drop old network data, at most once an hour.
+    fn prune_if_due(&self) -> Result<()> {
+        let now = now_ms();
+        {
+            let mut sched = self.sched.lock().unwrap_or_else(|p| p.into_inner());
+            if now - sched.last_prune < 3_600_000 {
+                return Ok(());
+            }
+            sched.last_prune = now;
+            sched.last_refresh.retain(|_, t| now - *t < 86_400_000);
+        }
+        self.store
+            .gossip_prune(now - 7 * 86_400_000, now - MAX_REQUEST_MS - 86_400_000)?;
+        self.store.prune(now, &Default::default())?;
         Ok(())
     }
 
@@ -828,7 +1071,15 @@ impl Node {
                 accepted += 1;
             }
         }
-        let observation = if authentic {
+        let me = self.key.public();
+        let observation = if !authentic {
+            None
+        } else if let Some(o) = self.store.observation(&env.body.from, &me)?.filter(|o| {
+            o.body.ip == from_ip && now - o.body.observed_at_ms < OBSERVATION_REFRESH_MS
+        }) {
+            // Nothing new to tell the network.
+            Some(o)
+        } else {
             let o = Signed::sign(
                 Observation {
                     subject: env.body.from,
@@ -840,8 +1091,6 @@ impl Node {
             )?;
             self.ingest(Gossip::Observation(o.clone()))?;
             Some(o)
-        } else {
-            None
         };
         Ok(PushResponse {
             accepted,

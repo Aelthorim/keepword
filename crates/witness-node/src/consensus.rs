@@ -11,7 +11,8 @@ use witness_core::{Digest, SignedAttestation, now_ms};
 use crate::Node;
 
 /// How far back verdicts look for attestations.
-const LOOKBACK_MS: i64 = 7 * 86_400_000;
+/// How far back verdicts look.
+pub const LOOKBACK_MS: i64 = 7 * 86_400_000;
 
 #[derive(Debug, Serialize)]
 pub struct VerdictView {

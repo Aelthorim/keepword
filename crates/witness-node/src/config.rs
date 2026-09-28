@@ -51,6 +51,17 @@ pub struct NetworkConfig {
     /// Max active watch requests accepted from one requester.
     pub max_requests_per_requester: u64,
     pub max_peers: usize,
+    /// Peers exchanged gossip with each round, chosen at random. Every
+    /// peer is still reached, over a few hops.
+    pub gossip_fanout: usize,
+    /// Auditors per log. Each audits the log's checkpoints for consistency
+    /// and cosigns them. Must be the same on every witness.
+    pub audit_logs: usize,
+    /// This node's log publishes a checkpoint (the latest head at the start
+    /// of each interval) for auditors to cosign; 0 = every head.
+    pub checkpoint_interval_secs: u64,
+    /// How often this node audits and cosigns each log it audits.
+    pub cosign_interval_secs: u64,
     /// Serve raw blobs to peers, for these hosts only (and their subdomains).
     pub serve_content_hosts: Vec<String>,
     /// Use the last X-Forwarded-For address, the one your proxy added, as
@@ -81,7 +92,11 @@ impl Default for NetworkConfig {
             replication: 5,
             max_per_country: 2,
             max_requests_per_requester: 50,
-            max_peers: 500,
+            max_peers: 2000,
+            gossip_fanout: 16,
+            audit_logs: 16,
+            checkpoint_interval_secs: 3600,
+            cosign_interval_secs: 3600,
             serve_content_hosts: vec![],
             trust_forwarded_for: false,
             allow_private_peers: false,

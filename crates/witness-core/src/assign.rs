@@ -52,6 +52,21 @@ pub fn weight(epoch_seed: &Digest, url_key: &Digest, key: &WitnessKey) -> Digest
     )
 }
 
+/// The witnesses that audit `log`: the `k` members ranked highest for it,
+/// excluding the log itself. Every node computes the same set from the same
+/// membership, so each log gets `k` auditors and, on average, each witness
+/// audits `k` logs, however large the network.
+pub fn auditors(log: &WitnessKey, members: &[WitnessKey], k: usize) -> Vec<WitnessKey> {
+    let mut ranked: Vec<(Digest, WitnessKey)> = members
+        .iter()
+        .filter(|m| *m != log)
+        .map(|m| (Digest::tagged("witness audit v1", &[&log.0, &m.0]), *m))
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked.dedup_by(|a, b| a.1 == b.1);
+    ranked.into_iter().take(k).map(|(_, m)| m).collect()
+}
+
 /// Pick up to `policy.k` witnesses for `url_key`, highest weight first,
 /// skipping any that would exceed the per-ASN or per-country caps. Returns
 /// fewer than `k` when the network isn't diverse enough; callers must treat
@@ -138,5 +153,28 @@ mod tests {
         // A new epoch reshuffles.
         let b = assign(&Digest::of(b"e2"), &url, &pool, &p);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn every_log_gets_k_auditors() {
+        let members: Vec<WitnessKey> = (0..50)
+            .map(|_| crate::keys::Keypair::generate().unwrap().public())
+            .collect();
+        let mut load: HashMap<WitnessKey, usize> = HashMap::new();
+        for log in &members {
+            let a = auditors(log, &members, 8);
+            assert_eq!(a.len(), 8);
+            assert!(!a.contains(log));
+            // Order of the member list doesn't matter.
+            let mut rev = members.clone();
+            rev.reverse();
+            assert_eq!(auditors(log, &rev, 8), a);
+            for m in a {
+                *load.entry(m).or_default() += 1;
+            }
+        }
+        assert_eq!(load.values().sum::<usize>(), 50 * 8);
+        // Small networks: everyone audits everyone.
+        assert_eq!(auditors(&members[0], &members[..4], 8).len(), 3);
     }
 }

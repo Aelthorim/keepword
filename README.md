@@ -9,7 +9,7 @@ page changes it tells you what changed and whether the publisher said so.
 Every record can be exported as a self-contained **evidence bundle** that
 anyone can verify offline, without trusting the node.
 
-Witnesses federate: they mirror and cosign each other's logs, take on
+Witnesses federate: they audit and cosign each other's logs, take on
 watch requests assigned by public randomness, corroborate each other's
 network location, and compare what they saw. When independent networks see
 different content at the same moment, the network raises a cloaking alert.
@@ -206,10 +206,11 @@ Integration tests run everything over real HTTP on localhost:
 
 - `e2e.rs`: the single-node lifecycle (capture, noise, silent and disclosed
   edits, bundles, tampering, redirects, audit, erasure)
-- `network.rs`: four witnesses in four ASNs (discovery, log mirroring,
+- `network.rs`: four witnesses in four ASNs (discovery, log audits,
   cosigning, observation receipts, assigned watch requests, replacing and
   withdrawing them, dropping gossip from strangers, a cloaking server
-  producing a split verdict and alert, equivocation detection)
+  producing a split verdict and alert, equivocation detection), and a
+  six-node network with one-peer gossip samples and two auditors per log
 - `anchoring.rs`: drand beacons and Bitcoin anchoring against mock drand,
   OpenTimestamps and Esplora services
 - `witness-normalize/tests/corpus.rs`: the normalizer regression corpus

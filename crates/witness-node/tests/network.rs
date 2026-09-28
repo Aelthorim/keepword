@@ -58,6 +58,16 @@ struct TestNode {
 }
 
 async fn spawn(asn: u32, country: &str, ua: &str, peers: Vec<String>) -> TestNode {
+    spawn_with(asn, country, ua, peers, |_| {}).await
+}
+
+async fn spawn_with(
+    asn: u32,
+    country: &str,
+    ua: &str,
+    peers: Vec<String>,
+    tweak: impl Fn(&mut Config),
+) -> TestNode {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -69,12 +79,18 @@ async fn spawn(asn: u32, country: &str, ua: &str, peers: Vec<String>) -> TestNod
     cfg.vantage.country = Some(country.into());
     cfg.network.endpoint = Some(endpoint.clone());
     cfg.network.peers = peers;
-    cfg.network.replication = 3;
+    // Four witnesses in four countries: every URL is assigned to all of
+    // them, so each one's captures reach every verdict.
+    cfg.network.replication = 4;
+    // Audit and cosign every round instead of hourly.
+    cfg.network.checkpoint_interval_secs = 0;
+    cfg.network.cosign_interval_secs = 0;
     cfg.beacon.drand_url = None;
     cfg.beacon.allow_insecure_seed = true;
     cfg.quorum.trust_self_reported = true;
     cfg.anchor.calendars = vec![];
     cfg.anchor.esplora_url = None;
+    tweak(&mut cfg);
     Node::init(dir.path(), &cfg).unwrap();
     let node = Arc::new(Node::open(dir.path()).unwrap());
     let app = witness_node::api::router(node.clone());
@@ -118,18 +134,26 @@ async fn four_witnesses() {
         assert_eq!(n.node.store.peers().unwrap().len(), 3, "peer count");
     }
 
-    // A captures; peers mirror its log, verify it and cosign.
+    // A captures; its auditors (everyone, in a network this small) check
+    // its checkpoint and hand it their cosignatures.
     let page = format!("{site}/page/one");
     let cap = nodes[0].node.capture(&page, false).await.unwrap();
     sync_all(&nodes, 2).await;
+    let a_key = nodes[0].node.key.public();
     for n in &nodes[1..] {
-        assert_eq!(n.node.store.foreign_count().unwrap(), 1);
-        let ids = n
-            .node
-            .store
-            .peer_leaf_ids(&nodes[0].node.key.public())
-            .unwrap();
-        assert_eq!(ids, vec![cap.record.id]);
+        assert!(n.node.audited_logs_now().unwrap().contains(&a_key));
+        let p = n.node.store.peer(&a_key).unwrap().unwrap();
+        assert_eq!(p.head.unwrap().head.size, 1, "audited head");
+        // Nothing is mirrored wholesale any more.
+        assert_eq!(n.node.store.foreign_count().unwrap(), 0);
+    }
+    // A later checkpoint must extend the audited one; the auditors check
+    // the consistency proof.
+    nodes[0].node.capture(&page, false).await.unwrap();
+    sync_all(&nodes, 1).await;
+    for n in &nodes[1..] {
+        let p = n.node.store.peer(&a_key).unwrap().unwrap();
+        assert_eq!(p.head.unwrap().head.size, 2, "audited head after growth");
     }
     let bundle = nodes[0].node.bundle(&cap.record, false).unwrap();
     assert_eq!(bundle.inclusion.as_ref().unwrap().cosignatures.len(), 3);
@@ -149,9 +173,19 @@ async fn four_witnesses() {
         assert!(!obs.is_empty(), "no observation of B");
         assert!(obs.iter().all(|o| o.body.ip.is_loopback()));
     }
+    // An observer doesn't re-issue an unchanged observation every round.
+    let seen = |n: &TestNode| {
+        n.node
+            .store
+            .observation(&b_key, &a_key)
+            .unwrap()
+            .map(|o| o.body.observed_at_ms)
+    };
+    let before = seen(&nodes[0]).expect("A observed B");
+    sync_all(&nodes, 1).await;
+    assert_eq!(seen(&nodes[0]), Some(before));
 
-    // A watch request: exactly three witnesses get assigned, capture, and
-    // the network agrees.
+    // A watch request: all four witnesses get assigned and capture.
     let requested = format!("{site}/page/two");
     let first = nodes[0]
         .node
@@ -168,13 +202,13 @@ async fn four_witnesses() {
             witness_node::web::run_due(&n.node, |_| {}).await.unwrap();
         }
     }
-    assert_eq!(assigned, 3);
+    assert_eq!(assigned, 4);
     sync_all(&nodes, 2).await;
-    // Which three were assigned depends on the epoch seed, and C and D get
-    // cloaked content, so the verdict itself varies; every node must see
-    // all three captures.
+    // C and D get cloaked content, so the verdict itself is a split; every
+    // node must see all four captures after fetching them.
     for n in &nodes {
-        assert_eq!(n.node.verdict(&requested).unwrap().considered, 3);
+        n.node.refresh_url(&requested).await.unwrap();
+        assert_eq!(n.node.verdict(&requested).unwrap().considered, 4);
     }
 
     // Replacing a request: a slower interval takes effect, which it
@@ -196,7 +230,7 @@ async fn four_witnesses() {
         .request_watch(&requested, 1200, 86_400_000, false)
         .unwrap();
     sync_all(&nodes, 2).await;
-    assert_eq!(request_watches(1200), 3);
+    assert_eq!(request_watches(1200), 4);
     assert_eq!(request_watches(600), 0);
 
     // Withdrawing it: every assigned witness stops, and the original
@@ -238,6 +272,9 @@ async fn four_witnesses() {
     for n in &nodes {
         n.node.capture(&cloaked, false).await.unwrap();
     }
+    for n in &nodes {
+        n.node.refresh_url(&cloaked).await.unwrap();
+    }
     sync_all(&nodes, 2).await;
     for n in &nodes {
         let v = n.node.verdict(&cloaked).unwrap();
@@ -258,6 +295,7 @@ async fn four_witnesses() {
         n.node.capture(&honest, false).await.unwrap();
     }
     sync_all(&nodes, 1).await;
+    nodes[2].node.refresh_url(&honest).await.unwrap();
     let v = nodes[2].node.verdict(&honest).unwrap();
     assert!(
         matches!(v.evaluation.verdict, Verdict::Insufficient { .. }),
@@ -304,4 +342,51 @@ async fn four_witnesses() {
     // A stops trusting B for assignment.
     let cands = nodes[0].node.candidates(witness_core::now_ms()).unwrap();
     assert!(!cands.iter().any(|c| c.key == b_key));
+}
+
+/// Larger networks: each round talks to a random sample of peers, and each
+/// log is audited by only `audit_logs` of them. Gossip still reaches
+/// everyone, and every log still collects its auditors' cosignatures.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sampled_gossip_and_audits() {
+    let site = content_server().await;
+    let tweak = |c: &mut Config| {
+        c.network.gossip_fanout = 1;
+        c.network.audit_logs = 2;
+    };
+    let first = spawn_with(64510, "DE", "w0", vec![], tweak).await;
+    let boot = vec![first.endpoint.clone()];
+    let mut nodes = vec![first];
+    for i in 1..6u32 {
+        nodes.push(spawn_with(64510 + i, "DE", &format!("w{i}"), boot.clone(), tweak).await);
+    }
+    let page = format!("{site}/page/sampled");
+    for n in &nodes {
+        n.node.capture(&page, false).await.unwrap();
+    }
+    // Everyone first learns of everyone (the full peer list comes on first
+    // contact), then audits run whatever the sample.
+    sync_all(&nodes, 3).await;
+    for n in &nodes {
+        assert_eq!(n.node.store.peers().unwrap().len(), 5, "peer count");
+    }
+    for n in &nodes {
+        let log = n.node.key.public();
+        let auditors: Vec<_> = nodes
+            .iter()
+            .filter(|m| m.node.audited_logs_now().unwrap().contains(&log))
+            .collect();
+        assert_eq!(auditors.len(), 2, "auditors per log");
+        let head = n.node.store.latest_tree_head().unwrap().unwrap();
+        let cosigs = n.node.store.cosigs_for(&head).unwrap();
+        // Early on, before views converge, a few others audit it too.
+        assert!(cosigs.len() >= 2, "cosignatures delivered to the log");
+        for a in auditors {
+            assert!(
+                cosigs
+                    .iter()
+                    .any(|c| c.body.cosigner == a.node.key.public())
+            );
+        }
+    }
 }
