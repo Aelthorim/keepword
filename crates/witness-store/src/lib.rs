@@ -11,6 +11,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 use witness_core::{
     CaptureMethod, Digest, Keypair, SignedAttestation, SignedTreeHead, TreeHead, merkle,
+    merkle::MerkleCache,
 };
 
 pub use blobs::BlobStore;
@@ -31,7 +32,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE attestations (
@@ -129,6 +130,9 @@ pub struct UrlSummary {
 
 pub struct Store {
     db: Mutex<Connection>,
+    /// Subtree hashes of the log, kept in step with `log_leaves` (another
+    /// process may append to it; see `with_merkle`).
+    merkle: Mutex<MerkleCache>,
     pub blobs: BlobStore,
 }
 
@@ -153,7 +157,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
-            0..=3 => {
+            0..=4 => {
                 let tx = conn.unchecked_transaction()?;
                 if v == 0 {
                     tx.execute_batch(SCHEMA)?;
@@ -164,7 +168,10 @@ impl Store {
                 if v <= 2 {
                     tx.execute_batch(net::SCHEMA_V3)?;
                 }
-                tx.execute_batch(net::SCHEMA_V4)?;
+                if v <= 3 {
+                    tx.execute_batch(net::SCHEMA_V4)?;
+                }
+                tx.execute_batch(net::SCHEMA_V5)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 tx.commit()?;
             }
@@ -177,6 +184,7 @@ impl Store {
         }
         Ok(Store {
             db: Mutex::new(conn),
+            merkle: Mutex::new(MerkleCache::new()),
             blobs: BlobStore::open(dir.join("blobs"))?,
         })
     }
@@ -200,13 +208,14 @@ impl Store {
         // power cut and later signing a different head of the same size would
         // look exactly like equivocation, so log appends are fully durable.
         db.pragma_update(None, "synchronous", "FULL")?;
-        let result = Self::commit_tx(&mut db, sa, &id, key, now_ms);
+        let result = Self::commit_tx(&mut db, &self.merkle, sa, &id, key, now_ms);
         db.pragma_update(None, "synchronous", "NORMAL")?;
         result
     }
 
     fn commit_tx(
         db: &mut Connection,
+        merkle: &Mutex<MerkleCache>,
         sa: &SignedAttestation,
         id: &Digest,
         key: &Keypair,
@@ -230,16 +239,26 @@ impl Store {
                 serde_json::to_string(sa)?,
             ],
         )?;
-        let size: i64 = tx.query_row("SELECT COUNT(*) FROM log_leaves", [], |r| r.get(0))?;
+        let size: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(idx) + 1, 0) FROM log_leaves",
+            [],
+            |r| r.get(0),
+        )?;
         tx.execute(
             "INSERT INTO log_leaves (idx, id) VALUES (?1, ?2)",
             params![size, id.as_bytes()],
         )?;
-        let leaves = load_leaves(&tx)?;
+        let mut cache = merkle.lock().unwrap_or_else(|p| p.into_inner());
+        sync_merkle(&tx, &mut cache)?;
+        let root = cache.root(size as usize + 1);
+        // Until the transaction commits, the new leaf isn't in the log.
+        cache.truncate(size as usize);
+        drop(cache);
+        let root = root.ok_or_else(|| StoreError::Corrupt("log cache out of step".into()))?;
         let head = TreeHead {
             log: key.public(),
-            size: leaves.len() as u64,
-            root: merkle::root(&leaves),
+            size: size as u64 + 1,
+            root,
             timestamp_ms: now_ms.max(a.fetched_at_ms),
         }
         .sign(key)?;
@@ -256,6 +275,15 @@ impl Store {
             },
             head,
         ))
+    }
+
+    /// Run `f` on the log's subtree hashes, brought up to date with the
+    /// stored log first. Roots and proofs from it cost O(log n).
+    pub fn with_merkle<T>(&self, f: impl FnOnce(&MerkleCache) -> T) -> Result<T> {
+        let db = self.db();
+        let mut cache = self.merkle.lock().unwrap_or_else(|p| p.into_inner());
+        sync_merkle(&db, &mut cache)?;
+        Ok(f(&cache))
     }
 
     /// Leaf hashes of the whole log, in order.
@@ -577,6 +605,25 @@ impl Store {
         tx.commit()?;
         Ok((deleted, rows))
     }
+}
+
+/// Append the leaves the cache doesn't have yet. The log only grows.
+fn sync_merkle(conn: &Connection, cache: &mut MerkleCache) -> Result<()> {
+    let mut st =
+        conn.prepare_cached("SELECT idx, id FROM log_leaves WHERE idx >= ?1 ORDER BY idx")?;
+    let rows = st.query_map([cache.len() as i64], |r| {
+        Ok((r.get::<_, i64>(0)?, digest(r, 1)?))
+    })?;
+    for row in rows {
+        let (idx, id) = row?;
+        if idx as usize != cache.len() {
+            return Err(StoreError::Corrupt(format!(
+                "log leaf {idx} out of sequence"
+            )));
+        }
+        cache.push(merkle::leaf_hash(id.as_bytes()));
+    }
+    Ok(())
 }
 
 fn load_leaves(conn: &Connection) -> Result<Vec<Digest>> {

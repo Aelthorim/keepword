@@ -103,6 +103,36 @@ impl Statement for WatchCancel {
     }
 }
 
+/// A request to recheck a URL whose witnesses disagreed. Witnesses drawn at
+/// random from the listed countries (the reporters' countries) capture it
+/// again; see `quorum::confirmed_versions`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecheckRequest {
+    pub url: String,
+    /// End of the disputed comparison window.
+    pub window_end_ms: i64,
+    /// ISO country codes of the disagreeing witnesses; at most three.
+    pub countries: Vec<String>,
+    pub requester: WitnessKey,
+    pub issued_at_ms: i64,
+}
+
+impl Statement for RecheckRequest {
+    const DOMAIN: &'static str = "witness/recheck/v1";
+    fn encode(&self, e: &mut Encoder) {
+        e.str(&self.url)
+            .i64(self.window_end_ms)
+            .list(&self.countries, |e, c| {
+                e.str(c);
+            })
+            .fixed(&self.requester.0)
+            .i64(self.issued_at_ms);
+    }
+    fn signer(&self) -> WitnessKey {
+        self.requester
+    }
+}
+
 /// A witness's statement that it has checked a log's tree head and that it
 /// is consistent with every earlier head it has seen from that log.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +308,7 @@ pub enum Gossip {
     Descriptor(Signed<Descriptor>),
     Request(Signed<WatchRequest>),
     Cancel(Signed<WatchCancel>),
+    Recheck(Signed<RecheckRequest>),
     TreeHead(SignedTreeHead),
     Cosignature(Signed<Cosignature>),
     Observation(Signed<Observation>),
@@ -297,6 +328,7 @@ impl Gossip {
             Gossip::Descriptor(_) => "descriptor",
             Gossip::Request(_) => "request",
             Gossip::Cancel(_) => "cancel",
+            Gossip::Recheck(_) => "recheck",
             Gossip::TreeHead(_) => "tree_head",
             Gossip::Cosignature(_) => "cosignature",
             Gossip::Observation(_) => "observation",
@@ -312,6 +344,7 @@ impl Gossip {
             Gossip::Descriptor(s) => s.id(),
             Gossip::Request(s) => s.id(),
             Gossip::Cancel(s) => s.id(),
+            Gossip::Recheck(s) => s.id(),
             Gossip::TreeHead(h) => Digest::tagged(
                 "witness tree-head-id v1",
                 &[&h.head.signing_bytes(), &h.signature.0],
@@ -350,6 +383,7 @@ impl Gossip {
             Gossip::Descriptor(s) => s.verify(),
             Gossip::Request(s) => s.verify(),
             Gossip::Cancel(s) => s.verify(),
+            Gossip::Recheck(s) => s.verify(),
             Gossip::TreeHead(h) => h.verify(),
             Gossip::Cosignature(s) => s.verify(),
             Gossip::Observation(s) => s.verify(),

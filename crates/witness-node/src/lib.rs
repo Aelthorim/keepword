@@ -9,6 +9,7 @@ pub mod consensus;
 pub mod daemon;
 pub mod federation;
 pub mod httpc;
+pub mod recheck;
 pub mod sysdir;
 pub mod vantage;
 pub mod web;
@@ -321,14 +322,14 @@ impl Node {
 
     /// Build a bundle proving a record's inclusion in the current log.
     pub fn bundle(&self, rec: &Record, with_content: bool) -> Result<Bundle> {
-        let leaves = self.store.leaves()?;
+        let log_size = self.store.with_merkle(|m| m.len())? as u64;
         // Prefer the largest tree head other witnesses have cosigned; the
         // latest head is usually too new to have cosignatures yet.
         let cosigned = self
             .store
             .cosigned_sizes(&self.key.public())?
             .into_iter()
-            .filter(|(size, _)| *size > rec.leaf_index && *size as usize <= leaves.len())
+            .filter(|(size, _)| *size > rec.leaf_index && *size <= log_size)
             .find_map(|(size, _)| self.store.tree_head_at(size).ok().flatten())
             .filter(|h| !self.store.cosigs_for(h).unwrap_or_default().is_empty());
         let head = match cosigned {
@@ -339,7 +340,9 @@ impl Node {
                 .ok_or_else(|| anyhow!("log is empty"))?,
         };
         let size = head.head.size as usize;
-        let proof = merkle::inclusion_proof(&leaves[..size], rec.leaf_index as usize)
+        let proof = self
+            .store
+            .with_merkle(|m| m.inclusion_proof(size, rec.leaf_index as usize))?
             .ok_or_else(|| anyhow!("record is not in the latest tree head"))?;
         let mut b = Bundle::new(rec.signed.clone());
         let cosignatures = self.store.cosigs_for(&head)?;

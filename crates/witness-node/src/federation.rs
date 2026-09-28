@@ -37,6 +37,12 @@ pub const MAX_REQUEST_MS: i64 = 30 * 86_400_000;
 /// Shortest interval a watch request may ask for.
 pub const MIN_REQUEST_EVERY_SECS: u64 = 600;
 /// Allowed clock skew for timestamps in messages.
+/// Gossiped heads of a log checked against this node's audit per audit.
+const HEAD_CHECKS_PER_AUDIT: u32 = 8;
+/// How long a log may fail to serve a consistency proof before that counts
+/// against it.
+const HEAD_CHECK_GRACE_MS: i64 = 86_400_000;
+
 pub const SKEW_MS: i64 = 5 * 60_000;
 /// Descriptors older than this are stale; nodes re-issue theirs every run
 /// and re-announce it every sync.
@@ -125,6 +131,8 @@ pub(crate) struct Schedule {
     last_audit: HashMap<WitnessKey, i64>,
     last_refresh: HashMap<String, i64>,
     last_prune: i64,
+    /// Candidates as of the last sync (see `candidates_snapshot`).
+    pub(crate) cands: Option<(i64, std::sync::Arc<Vec<Candidate>>)>,
 }
 
 impl Node {
@@ -178,6 +186,7 @@ impl Node {
             Gossip::Descriptor(_) | Gossip::Beacon(_) => None,
             Gossip::Request(r) => Some(r.body.requester),
             Gossip::Cancel(c) => Some(c.body.requester),
+            Gossip::Recheck(r) => Some(r.body.requester),
             Gossip::TreeHead(h) => Some(h.head.log),
             Gossip::Cosignature(c) => Some(c.body.cosigner),
             Gossip::Observation(o) => Some(o.body.observer),
@@ -194,6 +203,7 @@ impl Node {
             Gossip::Descriptor(d) => self.accept_descriptor(d, now)?,
             Gossip::Request(r) => self.accept_request(r, now)?,
             Gossip::Cancel(c) => self.accept_cancel(c, now)?,
+            Gossip::Recheck(r) => self.accept_recheck(r, now)?,
             Gossip::TreeHead(h) => {
                 if let Some(p) = self.store.peer(&h.head.log)? {
                     if let Some(known) = &p.head {
@@ -436,7 +446,12 @@ impl Node {
         Ok(self.assigned_among(seed, url, &self.candidates(now)?))
     }
 
-    fn assigned_among(&self, seed: &Digest, url: &url::Url, cands: &[Candidate]) -> Vec<Candidate> {
+    pub(crate) fn assigned_among(
+        &self,
+        seed: &Digest,
+        url: &url::Url,
+        cands: &[Candidate],
+    ) -> Vec<Candidate> {
         assign::assign(seed, &target::url_key(url), cands, &self.policy())
     }
 
@@ -750,7 +765,9 @@ impl Node {
                 }
             }
         }
+        self.refresh_candidates(now_ms())?;
         self.reconcile_requests().await?;
+        self.run_rechecks().await?;
         report.new_attestations = self.refresh_followed().await?;
         self.review_verdicts()?;
         self.prune_if_due()?;
@@ -911,6 +928,11 @@ impl Node {
         {
             self.store.peer_set_head(&peer.key, &head)?;
         }
+        let trusted = match &peer.head {
+            Some(k) if k.head.size > head.head.size => k,
+            _ => &head,
+        };
+        self.check_gossiped_heads(ep, trusted).await?;
         if let Some(other) = self.store.log_head_insert(&head, now_ms())? {
             self.record_equivocation(&other, &head)?;
             bail!(
@@ -918,6 +940,8 @@ impl Node {
                 head.head.size
             );
         }
+        self.store
+            .log_head_mark_checked(&head.head.log, head.head.size)?;
         // Tell the network which checkpoint this node saw. Everyone who saw
         // the same one sends the same message, so it's deduplicated.
         self.publish(Gossip::TreeHead(head.clone()))?;
@@ -939,6 +963,76 @@ impl Node {
                 .post_json::<_, serde_json::Value>(&join(ep, "/v1/cosignatures"), &c)
                 .await
                 .context("delivering cosignature")?;
+        }
+        Ok(())
+    }
+
+    /// Check the heads of an audited log that other auditors reported
+    /// against the one this node verified itself: the log must prove each
+    /// consistent with it. A log that showed auditors different histories of
+    /// different sizes can't; same-size forks are caught on arrival.
+    async fn check_gossiped_heads(&self, ep: &str, trusted: &SignedTreeHead) -> Result<()> {
+        let log = trusted.head.log;
+        let now = now_ms();
+        for (h, received) in self
+            .store
+            .log_heads_unchecked(&log, HEAD_CHECKS_PER_AUDIT)?
+        {
+            if h.head.size == trusted.head.size {
+                // Same size: `log_head_insert` compared the roots.
+                self.store.log_head_mark_checked(&log, h.head.size)?;
+                continue;
+            }
+            let (old, new) = if h.head.size < trusted.head.size {
+                (&h, trusted)
+            } else {
+                (trusted, &h)
+            };
+            let url = join(
+                ep,
+                &format!(
+                    "/v1/log/consistency?old={}&new={}",
+                    old.head.size, new.head.size
+                ),
+            );
+            let failure = match self.net.get_json::<ConsistencyProof>(&url).await {
+                Ok(c) => old
+                    .verify_extension(new, &c.proof)
+                    .err()
+                    .map(|_| "served a proof that doesn't hold".to_string()),
+                // An honest log can prove any two sizes it has signed.
+                Err(e)
+                    if status_of(&e)
+                        .is_some_and(|s| (400..500).contains(&s) && s != 408 && s != 429) =>
+                {
+                    Some(format!("refused the proof ({e:#})"))
+                }
+                // Unreachable or failing: try again next audit, but not
+                // forever.
+                Err(_) if now - received > HEAD_CHECK_GRACE_MS => {
+                    Some("failed to serve the proof for a day".to_string())
+                }
+                Err(_) => continue,
+            };
+            self.store.log_head_mark_checked(&log, h.head.size)?;
+            if let Some(why) = failure {
+                let detail = format!(
+                    "log heads of size {} and {} are not consistent: the log {why}",
+                    old.head.size, new.head.size
+                );
+                if self.store.inconsistency_insert(&log, &detail, now)? {
+                    self.raise_alert(
+                        AlertKind::Equivocation,
+                        None,
+                        format!(
+                            "witness {} showed auditors different histories: {detail}",
+                            log.short()
+                        ),
+                        vec![old.head.root, new.head.root],
+                    )?;
+                }
+                bail!("{detail}");
+            }
         }
         Ok(())
     }
@@ -984,6 +1078,15 @@ impl Node {
                         .iter()
                         .map(|c| c.key),
                 );
+            }
+        }
+        // And the witnesses drawn to recheck its disputed rounds.
+        for (end, countries) in self
+            .store
+            .disputes_for(url.as_str(), self.recheck_since(now))?
+        {
+            for c in countries {
+                targets.extend(self.recheckers(&url, end, &c, &cands));
             }
         }
         targets.remove(&me);

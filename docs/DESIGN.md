@@ -16,10 +16,10 @@ milestones ahead.
 |---|---|---|
 | Publisher | Edits a page and denies the earlier version | Signed attestations in append-only logs; timestamps anchored externally |
 | Publisher | Serves witnesses a clean version and real users something else (cloaking) | Many witnesses from independent networks at the same moment; rendered captures; disagreement is itself evidence |
-| Malicious witness | Fabricates a snapshot to frame a site | Quorum across independent operators; TLSNotary proofs for high-value captures; logs make lies permanent and attributable |
+| Malicious witness | Fabricates a snapshot to frame a site, or dissents to fake a split | Quorum across independent networks; disagreements settled by rechecks from witnesses drawn at random, so only reproducible versions count (§6.5); TLSNotary proofs for high-value captures; logs make lies permanent and attributable |
 | Sybil | Spins up many keys to fake consensus | Trust counts networks, not keys, and a network is only counted from what a node saw itself (§6.3); assignment by unpredictable per-epoch randomness. **Not** defended: one operator who really connects from many networks (§6.3) |
-| Log operator | Rewrites or forks their own history | Consistency proofs, checkpoint gossip, cosigning, Bitcoin anchoring. Same-size forks are proven; forks whose branches never share a size are **not yet** detected (§9) |
-| Requester | Uses witnesses as a proxy to attack LANs or other sites | Public-address-only resolver (**implemented**), rate limits, assignment instead of free choice |
+| Log operator | Rewrites or forks their own history | Consistency proofs, checkpoint gossip, cosigning, Bitcoin anchoring. Same-size forks are proven to anyone; forks of different sizes are caught by each auditor that checks the other auditors' heads (§6.2) |
+| Requester | Uses witnesses as a proxy to attack LANs or other sites | Public-address-only resolver, per-address API rate limits, assignment instead of free choice (**implemented**) |
 | Everyone | Legal exposure from hosting content | Hashes by default, opt-in retention, erasure that leaves logs intact (**implemented**) |
 
 The last two rows were not in the original plan. The requester attack
@@ -68,8 +68,8 @@ The original plan was sound. These are the places I changed it, and why.
    A node can claim any ASN. See §6.3 for corroboration. A related
    correction: faking many network locations is *not* hard. Residential
    proxy networks sell access to thousands of ASNs. ASN diversity raises
-   the cost of a Sybil attack but doesn't remove it. That is why TLSNotary,
-   and a list of known, independent operators (§9), still matter.
+   the cost of a Sybil attack but doesn't remove it. That is why TLSNotary
+   and rechecks by randomly drawn witnesses (§6.5) still matter.
    Reputation is computed but only shown; it is not a defence (§6.5).
 
 7. **Time needs a lower bound too.** Log inclusion plus OpenTimestamps
@@ -140,8 +140,10 @@ a second valid signature for the same statement.
 
 RFC 9162 Merkle tree over BLAKE3. `leaf = H(0x00 ‖ id)`, `node = H(0x01 ‖ l ‖ r)`,
 and the empty root is `H("")`. Inclusion and consistency proofs use the RFC
-algorithms and are tested exhaustively for every size up to 40. Each append
-produces a signed tree head:
+algorithms and are tested exhaustively for every size up to 40. A running
+node keeps the hash of every complete subtree (`merkle::MerkleCache`, about
+two hashes per leaf), so appends and proofs cost O(log n), not a pass over
+the whole log. Each append produces a signed tree head:
 `str("witness/tree-head/v1") ‖ log_key ‖ u64 size ‖ root ‖ i64 timestamp_ms`.
 Two valid heads with the same size and different roots are a portable proof
 of equivocation (`SignedTreeHead::is_equivocation_with`).
@@ -347,7 +349,14 @@ audits about 16 logs, whatever the network's size. Once per
    byte-identical messages, which gossip deduplicates. Two validly signed
    heads of the same log and size with different roots are an
    **equivocation proof**, whoever holds them: stored, gossiped and alerted
-   on. Equivocating logs are excluded from assignment.
+   on. Equivocating logs are excluded from assignment;
+5. checks the heads *other* auditors gossiped for the log against the one
+   it verified itself: the log must prove each consistent with it. A log
+   that showed different auditors histories that never share a size can't.
+   One that serves a proof that fails, refuses one (HTTP 4xx), or can't
+   serve one for a day is treated like an equivocating log by this node.
+   Unlike a same-size fork, this isn't a proof others can check offline,
+   so every auditor establishes it for itself.
 
 This is how Certificate Transparency's witnesses work. The earlier design
 mirrored every peer's log and attestations and gossiped every
@@ -419,7 +428,8 @@ gossip from*, not where it *captures from*. One server could push through
 twenty cheap proxies in twenty networks and do every capture from its own
 address, and it would count as twenty networks. So a corroborated location
 is not proof of independent evidence. It raises the cost per fake network;
-real independence comes from real, separate operators (§9).
+rechecks (§6.5) limit what the fake networks can decide, and real
+independence comes from real, separate operators.
 
 This establishes where a node *is* (its egress), not where each fetch came
 *from*. A malicious node can still fetch through a proxy, and no protocol
@@ -459,7 +469,7 @@ Assignment is only as consistent as nodes' views of the membership. After
 a few sync rounds they converge. Divergent views mean a URL briefly has
 slightly different assignees, never zero.
 
-### 6.5 Quorum, reputation and alerts
+### 6.5 Quorum, rechecks, reputation and alerts
 
 Attestations aren't copied around the network. A node that needs a verdict
 on a URL asks the witnesses assigned to it (this epoch and the last) for
@@ -476,16 +486,57 @@ class sharing capture method and normalizer profile that spans the most
 networks, groups them by
 comparison hash, and counts distinct corroborated ASNs, never keys:
 
-- **Agreed**: the top group reaches `min_asns`, no second group reaches
-  `min_dissent_asns`. Group members earn +1 reputation per URL and window;
-  dissenters get −3.
-- **Split**: two or more groups each reach `min_dissent_asns`. Independent
-  networks were served different content at the same moment. A **split
-  alert** is raised and flooded. A split is an observation, not an
+Only the witnesses assigned to the URL count; any other key's
+attestations are ignored, so extra keys can't join a round. If they all
+agree:
+
+- **Agreed**: the group reaches `min_asns`. Members earn +1 reputation per
+  URL and window.
+- **Insufficient**: fewer networks than that.
+
+**Rechecks.** If two located versions appear, the round is **disputed**,
+and a vote among the assigned witnesses would let whoever holds more of
+them decide. Instead, any assigned witness asks for a **recheck** (a signed
+`recheck` gossip message naming up to three of the reporters' countries).
+For each named country, public randomness draws `quorum.recheck_size` (5)
+witnesses located there, one per network and none assigned to the URL:
+the draw is keyed by the epoch's drand seed, the URL and a fixed slot of
+time (the comparison window), so every node computes the same recheckers,
+and neither the requester nor anyone else can retry until a draw suits
+them. The drawn witnesses capture the page again (at most
+`quorum.max_rechecks_per_hour` each). A version is **confirmed** if, in a
+country it was reported from, at least `quorum.recheck_quorum` (3) of the
+rechecking networks saw it and they are at least three quarters of the
+networks that rechecked there. Then:
+
+- two or more versions confirmed: **Split**. Independent networks really
+  are served different content. A split is an observation, not an
   accusation: localization, A/B tests, a rollout in progress and bot
   blocking all cause them, as does cloaking. People decide which by
-  comparing the versions.
-- **Insufficient**: anything else.
+  comparing the versions;
+- one confirmed: **Agreed** on it, the rechecks joining its group. The
+  dissenters get −3 reputation, and if the rechecks sampled their countries
+  well enough to have reproduced their version and didn't, a **failed
+  claim** is recorded against the network prefix (/24, /48) this node saw
+  each dissenter connect from. Networks with `quorum.max_failed_claims` (5)
+  in a week are left out of verdicts: keys are free, addresses aren't;
+- none confirmed: **Disputed**, and while rechecks may still arrive,
+  Disputed (pending). A dissent from `min_dissent_asns` networks whose
+  countries had too few witnesses to recheck also leaves the round
+  Disputed rather than overruled.
+
+A **split alert** is raised only when `quorum.split_confirmations` (3) of
+the last `quorum.split_rounds` (4) settled recheck draws for the URL found
+a split. Each draw is an independent sample, settled once.
+
+What this costs an attacker: with a fifth of the network's networks,
+making up a version and getting it confirmed needs most of a five-witness
+draw in one country (about 1 in 300 per round), and an alert needs that
+three times in four rounds; getting an honest version overruled needs the
+same. Meanwhile each failed claim counts against the attacker's
+addresses. What it doesn't cover: a country where one operator runs most
+witnesses decides what is "seen from" that country, and a round whose
+assigned witnesses are all one operator's agrees on whatever they say.
 
 Reputation decays with a 14-day half-life, so it takes sustained agreement
 to build. **Silent-edit alerts** are raised by the capturing witness. Reputation is **informational only**: it
@@ -625,27 +676,14 @@ before public operation. The design aims to leave room for compliance.
 - **ASN table provenance.** Verifiers should agree on the IP→ASN table.
   Pinning its hash per epoch (and gossiping it) is straightforward, but not
   built.
-- **A list of known witnesses (planned before outside operators join).**
-  Offline verifiers can't tell independent cosigners from keys one operator
-  controls, and corroborated location can't tell independent operators from
-  one operator behind many proxies. A curated list of witness keys with
-  their operators, like Certificate Transparency's log list, would let
-  `witness verify`, cosignature counting, corroboration and verdicts count
-  known, independent people. It is a trust anchor the project would have to
-  govern openly.
-- **Forks of different sizes.** Auditors check each checkpoint against the
-  last one *they* saw, and same-size conflicts are proof. A log that shows
-  one group of auditors sizes 10, 12, 14 and another 11, 13, 15 is not yet
-  caught. Planned: when a node sees a gossiped checkpoint of a log it audits
-  at a size it hasn't verified, it asks the log for the consistency proof
-  between the two, and treats a log that can't give one like an
-  equivocating log. Requiring cosignatures from a majority of known
-  witnesses in `verify` closes the rest.
+- **A list of known witnesses (not planned).** Offline verifiers can't
+  tell independent cosigners from keys one operator controls, and
+  corroborated location can't tell independent operators from one operator
+  behind many proxies. A curated list of operators, like Certificate
+  Transparency's log list, would fix that, but it would also make the
+  project a gatekeeper, and the network is meant to grow without one.
+  Rechecks (§6.5) bound what extra keys and networks buy instead.
 - **Bundles that carry the verdict.** A bundle holds one witness's
   attestation. A second format carrying the other witnesses' matching
   attestations with their inclusion proofs would let the agreement itself
   be verified offline.
-- **Cost of proofs.** The inclusion and consistency endpoints rebuild the
-  tree from every leaf on each request. That is fine at thousands of leaves
-  but an easy denial of service at millions: cache the tree levels or move
-  to tiles, and rate-limit the public API, before logs grow that large.

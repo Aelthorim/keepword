@@ -1104,6 +1104,25 @@ fn print_verdict(v: &witness_node::consensus::VerdictView) {
                 );
             }
         }
+        Verdict::Disputed { groups, pending } => {
+            if *pending {
+                println!(
+                    "DISPUTED: the assigned witnesses disagree; witnesses drawn at random are rechecking"
+                );
+            } else {
+                println!(
+                    "DISPUTED: the assigned witnesses disagree and the rechecks settled nothing"
+                );
+            }
+            for g in groups {
+                println!(
+                    "  {} ← {} witnesses in ASNs {:?}",
+                    g.hash.short(),
+                    g.witnesses.len(),
+                    g.asns
+                );
+            }
+        }
         Verdict::Insufficient { groups } => {
             println!("INSUFFICIENT: not enough independent networks yet");
             for g in groups {
@@ -1115,6 +1134,9 @@ fn print_verdict(v: &witness_node::consensus::VerdictView) {
                 );
             }
         }
+    }
+    if v.rechecks > 0 {
+        println!("  {} recheck captures counted", v.rechecks);
     }
     if v.evaluation.rejected > 0 {
         println!(

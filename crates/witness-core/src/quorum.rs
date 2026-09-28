@@ -53,6 +53,9 @@ pub enum Verdict {
     Split { groups: Vec<Group> },
     /// Not enough independent witnesses to say anything.
     Insufficient { groups: Vec<Group> },
+    /// Witnesses disagreed, and rechecks haven't confirmed which version
+    /// is real (yet, if `pending`).
+    Disputed { groups: Vec<Group>, pending: bool },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +69,9 @@ pub struct Evaluation {
     /// End of the compared window (fetch time of its newest attestation).
     #[serde(default)]
     pub window_end_ms: Option<i64>,
+    /// Every version in the compared window, most networks first.
+    #[serde(default)]
+    pub groups: Vec<Group>,
 }
 
 /// Evaluate attestations of one URL. `asn_of` returns the *corroborated* ASN
@@ -139,6 +145,7 @@ pub fn evaluate(
             rejected,
             considered: 0,
             window_end_ms: None,
+            groups: vec![],
         };
     };
     // One (latest) attestation per witness inside the window.
@@ -173,6 +180,7 @@ pub fn evaluate(
             rejected,
             considered,
             window_end_ms: Some(end),
+            groups: vec![],
         };
     };
 
@@ -193,6 +201,7 @@ pub fn evaluate(
         g.witnesses.sort();
     }
     groups.sort_by(|a, b| b.asns.len().cmp(&a.asns.len()).then(a.hash.cmp(&b.hash)));
+    let all = groups.clone();
 
     let substantial = groups
         .iter()
@@ -214,7 +223,77 @@ pub fn evaluate(
         rejected,
         considered,
         window_end_ms: Some(end),
+        groups: all,
     }
+}
+
+/// A capture made by a recheck witness: where it is and what it saw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecheckResult {
+    pub country: String,
+    pub asn: u32,
+    pub hash: Digest,
+}
+
+/// Share of the rechecks in a country that must agree on a version, as a
+/// fraction (numerator, denominator): three quarters.
+pub const RECHECK_SHARE: (usize, usize) = (3, 4);
+
+/// Which disputed versions the rechecks confirm.
+///
+/// When witnesses disagree, fresh witnesses the reporters couldn't choose
+/// recheck the page in the reporters' countries. A version is confirmed if,
+/// in one of the countries it was reported from, at least `quorum`
+/// independent networks recheck it and they make up at least three quarters
+/// of the networks that rechecked there. Real regional differences
+/// reproduce; a made-up version needs the attacker to also control most of
+/// the randomly drawn rechecks.
+///
+/// `versions` pairs each disputed comparison hash with the countries its
+/// reporters are in. Rechecks are counted once per network.
+pub fn confirmed_versions(
+    versions: &[(Digest, BTreeSet<String>)],
+    rechecks: &[RecheckResult],
+    quorum: usize,
+) -> BTreeSet<Digest> {
+    // country -> network -> what it saw (first report per network wins).
+    let mut seen: BTreeMap<&str, BTreeMap<u32, Digest>> = BTreeMap::new();
+    for r in rechecks {
+        seen.entry(r.country.as_str())
+            .or_default()
+            .entry(r.asn)
+            .or_insert(r.hash);
+    }
+    let (num, den) = RECHECK_SHARE;
+    let mut out = BTreeSet::new();
+    for (hash, countries) in versions {
+        let ok = countries.iter().any(|c| {
+            let Some(nets) = seen.get(c.as_str()) else {
+                return false;
+            };
+            let agree = nets.values().filter(|h| *h == hash).count();
+            agree >= quorum.max(1) && agree * den >= nets.len() * num
+        });
+        if ok {
+            out.insert(*hash);
+        }
+    }
+    out
+}
+
+/// Whether rechecks sampled every country in `countries` well enough to
+/// have confirmed a version from there: at least `quorum` networks in each.
+/// A version that was sampled and not confirmed was contradicted; one that
+/// wasn't sampled simply couldn't be checked.
+pub fn sampled(countries: &BTreeSet<String>, rechecks: &[RecheckResult], quorum: usize) -> bool {
+    countries.iter().all(|c| {
+        let nets: BTreeSet<u32> = rechecks
+            .iter()
+            .filter(|r| &r.country == c)
+            .map(|r| r.asn)
+            .collect();
+        nets.len() >= quorum.max(1)
+    })
 }
 
 /// Convenience for callers that only have self-reported vantage data, such
@@ -379,5 +458,54 @@ mod tests {
             Verdict::Agreed { group, .. } => assert_eq!(group.hash, Digest::of(b"page")),
             other => panic!("expected the honest class to be compared, got {other:?}"),
         }
+    }
+
+    fn rc(country: &str, asn: u32, what: &[u8]) -> RecheckResult {
+        RecheckResult {
+            country: country.into(),
+            asn,
+            hash: Digest::of(what),
+        }
+    }
+
+    #[test]
+    fn rechecks_confirm_real_versions_only() {
+        let a = Digest::of(b"A");
+        let b = Digest::of(b"B");
+        let de: BTreeSet<String> = ["DE".to_string()].into();
+        let nl: BTreeSet<String> = ["NL".to_string()].into();
+        let versions = vec![(a, de.clone()), (b, nl.clone())];
+
+        // Real cloaking: Dutch rechecks see B, German ones A.
+        let real = vec![
+            rc("DE", 1, b"A"),
+            rc("DE", 2, b"A"),
+            rc("DE", 3, b"A"),
+            rc("NL", 4, b"B"),
+            rc("NL", 5, b"B"),
+            rc("NL", 6, b"B"),
+            rc("NL", 7, b"A"),
+        ];
+        assert_eq!(confirmed_versions(&versions, &real, 3), [a, b].into());
+
+        // A made-up B: honest Dutch rechecks see A.
+        let fake = vec![
+            rc("DE", 1, b"A"),
+            rc("DE", 2, b"A"),
+            rc("DE", 3, b"A"),
+            rc("NL", 4, b"A"),
+            rc("NL", 5, b"A"),
+            rc("NL", 6, b"B"),
+            rc("NL", 7, b"B"),
+        ];
+        assert_eq!(confirmed_versions(&versions, &fake, 3), [a].into());
+
+        // Two keys in one network count once.
+        let dup = vec![rc("NL", 4, b"B"), rc("NL", 4, b"B"), rc("NL", 4, b"B")];
+        assert!(confirmed_versions(&versions, &dup, 3).is_empty());
+
+        // Rechecks elsewhere don't confirm a version from NL.
+        let elsewhere = vec![rc("FR", 8, b"B"), rc("FR", 9, b"B"), rc("FR", 10, b"B")];
+        assert!(confirmed_versions(&versions, &elsewhere, 3).is_empty());
     }
 }

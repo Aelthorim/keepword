@@ -52,6 +52,20 @@ pub fn weight(epoch_seed: &Digest, url_key: &Digest, key: &WitnessKey) -> Digest
     )
 }
 
+/// The key rechecks for a disputed URL are ranked by: specific to the
+/// comparison window and the country being rechecked, so each dispute gets
+/// its own random draw.
+pub fn recheck_key(url_key: &Digest, window_end_ms: i64, country: &str) -> Digest {
+    Digest::tagged(
+        "witness recheck v1",
+        &[
+            url_key.as_bytes(),
+            &window_end_ms.to_be_bytes(),
+            country.as_bytes(),
+        ],
+    )
+}
+
 /// The witnesses that audit `log`: the `k` members ranked highest for it,
 /// excluding the log itself. Every node computes the same set from the same
 /// membership, so each log gets `k` auditors and, on average, each witness

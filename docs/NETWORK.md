@@ -162,12 +162,24 @@ on every witness**, or witnesses disagree about who captures what:
 | `network.replication` | 5 |
 | `network.max_per_country` | 2 |
 | `network.audit_logs` | 16 |
+| `quorum.window_secs` | 600 (rechecks are drawn per window) |
+| `quorum.recheck_size` | 5 |
 | `beacon.drand_url` | `https://api.drand.sh` (quicknet) |
 
 These only change how *your* witness judges verdicts, but keep the
 defaults so all witnesses report the same thing: `quorum.min_asns = 3`,
-`quorum.min_dissent_asns = 2`, `quorum.window_secs = 600`,
-`quorum.min_observers = 2`.
+`quorum.min_dissent_asns = 2`, `quorum.min_observers = 2`,
+`quorum.recheck_quorum = 3`, `quorum.recheck_secs = 1800`,
+`quorum.split_confirmations = 3` of `quorum.split_rounds = 4`,
+`quorum.max_failed_claims = 5`.
+
+**Rechecks need witnesses to spare.** When the witnesses assigned to a URL
+disagree, witnesses drawn at random from the same countries, not assigned
+to it, capture it again, and only versions they reproduce count
+(DESIGN.md §6.5). A country needs at least `quorum.recheck_quorum` (3)
+witnesses on different networks beyond those assigned before a difference
+seen from there can be confirmed. Until then disagreements stay
+`DISPUTED`, and no split alert is raised.
 
 **Never enable these on a public witness.** They exist for test networks,
 and `witness net status` warns about them: `quorum.trust_self_reported`,
@@ -182,6 +194,8 @@ and `witness net status` warns about them: `quorum.trust_self_reported`,
 | `network.render_requests` | Render requests in Chromium. Off by default: the browser fetches sub-resources past the node's address checks, so only enable it with the browser sandboxed away from your LAN. |
 | `network.serve_content_hosts` | Hosts whose captured content your API serves to anyone. Empty by default: peers get hashes and signatures, never page content. |
 | `content.retain` | `full`, `normalized` or `none`. See DESIGN.md §7 before storing third-party content. |
+| `quorum.max_rechecks_per_hour` | Most recheck captures your witness makes for the network in an hour (default 30). |
+| `network.api_requests_per_minute` | Requests per minute the public API answers from one address, in bursts of as many (default 600, 0 = off). Behind a reverse proxy it needs `network.trust_forwarded_for` to see real addresses; without it, private and local addresses aren't limited. |
 
 Change settings with `witness config set KEY VALUE`, then
 `sudo systemctl restart witness`.
@@ -250,5 +264,7 @@ restart it.
 | Peers all show the same ASN | They're at the same provider, or observations come from a proxy or CDN in front of the API. The API must be reached directly or through your own reverse proxy (INSTALL.md). |
 | `no seed: no drand beacon` | Nobody can reach drand yet. Assignment waits for the day's beacon. |
 | Verdicts stay `INSUFFICIENT` | Fewer than 3 ASNs among the witnesses assigned to the URL, or their captures fall outside one 10-minute window. |
+| A verdict says `DISPUTED` | The assigned witnesses saw different versions. While rechecks run (up to half an hour) it says so; if it stays disputed, too few spare witnesses in those countries could recheck, or the page differs on every fetch (add a site rule for the changing part). |
+| Peers get `HTTP 429` | They hit `network.api_requests_per_minute`. Raise it, or check that a proxy in front passes real addresses (`trust_forwarded_for`). |
 | Messages rejected, heads look wrong | Clock skew: check `timedatectl`. |
 | A bundle has no cosignatures | The capture is newer than the log's last checkpoint. Checkpoints are hourly; auditors cosign within the following hour. |
