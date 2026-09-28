@@ -1,6 +1,6 @@
 //! Anchoring tree heads in Bitcoin through OpenTimestamps calendars.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use witness_core::bundle::{Anchor, Bundle, Report, Status, anchor_digest};
 use witness_core::now_ms;
@@ -123,13 +123,13 @@ impl Node {
         let Some(row) = self.store.anchor_covering(leaf_index)? else {
             return Ok(());
         };
-        let leaves = self.store.leaves()?;
         let size = row.size as usize;
-        if size > leaves.len() {
+        let Some(proof) = self
+            .store
+            .with_merkle(|m| m.inclusion_proof(size, leaf_index as usize))?
+        else {
             return Ok(());
-        }
-        let proof = witness_core::merkle::inclusion_proof(&leaves[..size], leaf_index as usize)
-            .ok_or_else(|| anyhow!("leaf not covered by anchor"))?;
+        };
         b.anchor = Some(Anchor {
             tree_head: row.head,
             leaf_index,

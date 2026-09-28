@@ -1,7 +1,7 @@
 //! Quorum verdicts across witnesses, rechecks of disputed rounds,
 //! reputation and alerts (docs/DESIGN.md §6.5).
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -115,7 +115,7 @@ impl Node {
                 .and_then(|l| l.as_ref())
                 .map(|l| l.country.clone())
         };
-        let cands = self.candidates(now)?;
+        let cands = self.candidates_snapshot(now)?;
 
         // The round: only witnesses assigned to the URL count.
         let mut assigned_cache: HashMap<u64, Option<HashSet<WitnessKey>>> = HashMap::new();
@@ -170,7 +170,8 @@ impl Node {
                 .map(|a| &a.attestation)
                 .find(|a| versions.iter().any(|v| v.0 == a.comparison_hash()));
             let mut draws = Vec::new();
-            let mut seen: HashMap<WitnessKey, RecheckResult> = HashMap::new();
+            // By key, so which report of a network counts is the same everywhere.
+            let mut seen: BTreeMap<WitnessKey, RecheckResult> = BTreeMap::new();
             for (d_slot, countries) in self.store.disputes_for(url, self.recheck_since(now))? {
                 let deadline = self.recheck_deadline(d_slot);
                 let mut drawn = 0;
@@ -431,15 +432,10 @@ impl Node {
             return Ok(());
         }
         let parsed = witness_core::target::canonical_url(url)?;
-        let cands = self.candidates(now)?;
+        let cands = self.candidates_snapshot(now)?;
         let eligible = self
             .assigned_near(&parsed, d.slot, &cands)
-            .is_some_and(|a| a.contains(&me))
-            || self
-                .store
-                .requests_active(now)?
-                .iter()
-                .any(|r| r.body.url == url && r.body.requester == me);
+            .is_some_and(|a| a.contains(&me));
         if !eligible {
             return Ok(());
         }

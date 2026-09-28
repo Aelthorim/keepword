@@ -6,21 +6,26 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use witness_core::net::Descriptor;
 use witness_core::statement::Signed;
-use witness_core::{Digest, SignedAttestation, merkle, now_ms};
+use witness_core::{Digest, SignedAttestation, now_ms};
 
 use crate::Node;
 use crate::federation::{GossipPage, IdList, PushRequest};
 
 pub fn router(node: Arc<Node>) -> Router {
+    let limiter = Arc::new(RateLimiter::new(
+        node.config.network.api_requests_per_minute,
+    ));
     Router::new()
         .route("/v1/descriptor", get(descriptor))
         .route("/v1/peers", get(peers))
@@ -39,7 +44,85 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/v1/blob/{hash}", get(blob))
         .route("/v1/gossip", get(gossip_pull).post(gossip_push))
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            (node.clone(), limiter),
+            rate_limit,
+        ))
         .with_state(node)
+}
+
+/// Token buckets per client address: `per_minute` tokens, refilled evenly.
+pub struct RateLimiter {
+    per_minute: u32,
+    buckets: Mutex<HashMap<IpAddr, (f64, Instant)>>,
+}
+
+/// Buckets kept at most; full ones are dropped first when it fills up.
+const MAX_BUCKETS: usize = 100_000;
+
+impl RateLimiter {
+    pub fn new(per_minute: u32) -> Self {
+        RateLimiter {
+            per_minute,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Take a token for `ip`; false when it has none left.
+    pub fn allow(&self, ip: IpAddr, now: Instant) -> bool {
+        if self.per_minute == 0 {
+            return true;
+        }
+        let cap = self.per_minute as f64;
+        let rate = cap / 60.0;
+        let key = match ip {
+            IpAddr::V6(v6) => {
+                let s = v6.segments();
+                IpAddr::V6(std::net::Ipv6Addr::new(s[0], s[1], s[2], s[3], 0, 0, 0, 0))
+            }
+            v4 => v4,
+        };
+        let mut b = self.buckets.lock().unwrap_or_else(|p| p.into_inner());
+        if b.len() >= MAX_BUCKETS && !b.contains_key(&key) {
+            b.retain(|_, (tokens, t)| {
+                *tokens + now.saturating_duration_since(*t).as_secs_f64() * rate < cap
+            });
+            if b.len() >= MAX_BUCKETS {
+                return false;
+            }
+        }
+        let (tokens, t) = b.entry(key).or_insert((cap, now));
+        *tokens = (*tokens + now.saturating_duration_since(*t).as_secs_f64() * rate).min(cap);
+        *t = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+async fn rate_limit(
+    State((node, limiter)): State<(Arc<Node>, Arc<RateLimiter>)>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let ip = client_ip(&node, addr, req.headers());
+    // Without the real client address (a local reverse proxy, a LAN), every
+    // client would share one bucket.
+    let unknown =
+        !node.config.network.trust_forwarded_for && !witness_capture::netpolicy::is_public(ip);
+    if unknown || limiter.allow(ip, Instant::now()) {
+        next.run(req).await
+    } else {
+        let mut r =
+            ApiError(StatusCode::TOO_MANY_REQUESTS, "too many requests".into()).into_response();
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("10"));
+        r
+    }
 }
 
 struct ApiError(StatusCode, String);
@@ -122,13 +205,13 @@ async fn consistency(
     State(node): State<Arc<Node>>,
     Query(q): Query<HashMap<String, u64>>,
 ) -> Result<Response, ApiError> {
-    let leaves = node.store.leaves()?;
     let old = *q.get("old").ok_or_else(|| bad("old is required"))? as usize;
-    let new = q.get("new").map(|n| *n as usize).unwrap_or(leaves.len());
-    if new > leaves.len() || old > new {
-        return Err(bad("sizes out of range"));
-    }
-    let proof = merkle::consistency_proof(&leaves[..new], old).unwrap_or_default();
+    let new = q.get("new").map(|n| *n as usize);
+    let (new, proof) = node.store.with_merkle(|m| {
+        let new = new.unwrap_or(m.len());
+        (new, m.consistency_proof(old, new))
+    })?;
+    let proof = proof.ok_or_else(|| bad("sizes out of range"))?;
     Ok(
         Json(serde_json::json!({ "old_size": old, "new_size": new, "proof": proof }))
             .into_response(),
@@ -142,8 +225,9 @@ async fn inclusion(
     let id = parse_id(&id)?;
     let idx = node.store.leaf_index(&id)?.ok_or_else(not_found)?;
     let head = node.store.latest_tree_head()?.ok_or_else(not_found)?;
-    let leaves = node.store.leaves()?;
-    let proof = merkle::inclusion_proof(&leaves[..head.head.size as usize], idx as usize)
+    let proof = node
+        .store
+        .with_merkle(|m| m.inclusion_proof(head.head.size as usize, idx as usize))?
         .ok_or_else(not_found)?;
     Ok(
         Json(serde_json::json!({ "leaf_index": idx, "proof": proof, "tree_head": head }))
@@ -287,4 +371,36 @@ async fn gossip_push(
     let node2 = node.clone();
     let resp = tokio::task::spawn_blocking(move || node2.receive_push(req, ip)).await??;
     Ok(Json(resp).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn rate_limit_buckets_refill() {
+        let l = RateLimiter::new(60);
+        let t0 = Instant::now();
+        let a: IpAddr = "203.0.113.7".parse().unwrap();
+        let b: IpAddr = "203.0.113.8".parse().unwrap();
+        for _ in 0..60 {
+            assert!(l.allow(a, t0));
+        }
+        assert!(!l.allow(a, t0), "burst exhausted");
+        assert!(l.allow(b, t0), "other addresses have their own bucket");
+        assert!(
+            l.allow(a, t0 + Duration::from_secs(1)),
+            "one token a second"
+        );
+        assert!(!l.allow(a, t0 + Duration::from_secs(1)));
+        // One IPv6 /64 is one client.
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        let v6b: IpAddr = "2001:db8::ffff:2".parse().unwrap();
+        for _ in 0..60 {
+            assert!(l.allow(v6, t0));
+        }
+        assert!(!l.allow(v6b, t0));
+        assert!(RateLimiter::new(0).allow(a, t0), "0 = no limit");
+    }
 }

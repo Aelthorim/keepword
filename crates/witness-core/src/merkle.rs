@@ -2,9 +2,9 @@
 //!
 //! Leaves and interior nodes are domain-separated with the 0x00 / 0x01
 //! prefixes from the RFC, so a leaf can never be passed off as a subtree.
-//! Functions that build proofs take the full list of *leaf hashes*; this is
-//! O(n) per proof, which is fine for a single node. A tiled log replaces it
-//! once logs get large (see docs/DESIGN.md).
+//! The functions that build proofs from a list of *leaf hashes* are O(n) per
+//! proof; [`MerkleCache`] keeps every complete subtree's hash so a running
+//! node answers proofs in O(log n).
 
 use crate::Digest;
 
@@ -186,6 +186,135 @@ pub fn verify_consistency(
     fr == *old_root && sr == *new_root && s == 0
 }
 
+/// Hashes of every complete, aligned subtree of an append-only log, so
+/// roots and proofs cost O(log n) instead of O(n). `levels[h][i]` is the
+/// hash of leaves `i * 2^h .. (i + 1) * 2^h`. Memory: about two digests per
+/// leaf.
+#[derive(Clone, Debug, Default)]
+pub struct MerkleCache {
+    levels: Vec<Vec<Digest>>,
+}
+
+impl MerkleCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of leaves.
+    pub fn len(&self) -> usize {
+        self.levels.first().map_or(0, Vec::len)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Append a leaf hash.
+    pub fn push(&mut self, leaf: Digest) {
+        let mut h = 0;
+        let mut d = leaf;
+        loop {
+            if self.levels.len() == h {
+                self.levels.push(Vec::new());
+            }
+            self.levels[h].push(d);
+            let n = self.levels[h].len();
+            if n % 2 == 1 {
+                break;
+            }
+            d = node_hash(&self.levels[h][n - 2], &self.levels[h][n - 1]);
+            h += 1;
+        }
+    }
+
+    /// Drop every leaf from `n` on.
+    pub fn truncate(&mut self, n: usize) {
+        for (h, level) in self.levels.iter_mut().enumerate() {
+            level.truncate(n >> h);
+        }
+        while self.levels.last().is_some_and(Vec::is_empty) {
+            self.levels.pop();
+        }
+    }
+
+    /// Merkle tree hash of leaves `start .. start + n`, where every call
+    /// comes from the RFC 9162 recursion: `start` is a multiple of the
+    /// largest power of two not above `n`.
+    fn hash(&self, start: usize, n: usize) -> Digest {
+        match n {
+            0 => Digest::of(b""),
+            n if n.is_power_of_two() => {
+                let h = n.trailing_zeros() as usize;
+                self.levels[h][start >> h]
+            }
+            n => {
+                let k = split(n);
+                node_hash(&self.hash(start, k), &self.hash(start + k, n - k))
+            }
+        }
+    }
+
+    /// Root of the tree of the first `size` leaves.
+    pub fn root(&self, size: usize) -> Option<Digest> {
+        (size <= self.len()).then(|| self.hash(0, size))
+    }
+
+    /// Audit path for leaf `index` in the tree of the first `size` leaves;
+    /// the same as [`inclusion_proof`] over those leaves.
+    pub fn inclusion_proof(&self, size: usize, index: usize) -> Option<Vec<Digest>> {
+        if size > self.len() || index >= size {
+            return None;
+        }
+        let mut out = Vec::new();
+        self.path(index, 0, size, &mut out);
+        Some(out)
+    }
+
+    fn path(&self, m: usize, start: usize, n: usize, out: &mut Vec<Digest>) {
+        if n <= 1 {
+            return;
+        }
+        let k = split(n);
+        if m < k {
+            self.path(m, start, k, out);
+            out.push(self.hash(start + k, n - k));
+        } else {
+            self.path(m - k, start + k, n - k, out);
+            out.push(self.hash(start, k));
+        }
+    }
+
+    /// Proof that the first `old` leaves are a prefix of the first `new`;
+    /// the same as [`consistency_proof`] over those leaves.
+    pub fn consistency_proof(&self, old: usize, new: usize) -> Option<Vec<Digest>> {
+        if new > self.len() || old > new {
+            return None;
+        }
+        let mut out = Vec::new();
+        if old > 0 && old < new {
+            self.subproof(old, 0, new, true, &mut out);
+        }
+        Some(out)
+    }
+
+    fn subproof(&self, m: usize, start: usize, n: usize, complete: bool, out: &mut Vec<Digest>) {
+        if m == n {
+            if !complete {
+                out.push(self.hash(start, n));
+            }
+            return;
+        }
+        let k = split(n);
+        if m <= k {
+            self.subproof(m, start, k, complete, out);
+            out.push(self.hash(start + k, n - k));
+        } else {
+            self.subproof(m - k, start + k, n - k, false, out);
+            out.push(self.hash(start, k));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +392,44 @@ mod tests {
         l[3] = leaf_hash(b"rewritten");
         let p = consistency_proof(&l, 6).unwrap();
         assert!(!verify_consistency(6, 10, &old_root, &root(&l), &p));
+    }
+
+    #[test]
+    fn cache_matches_the_slice_functions() {
+        let leaves: Vec<Digest> = (0..70u32).map(|i| leaf_hash(&i.to_be_bytes())).collect();
+        let mut c = MerkleCache::new();
+        assert_eq!(c.root(0), Some(root(&[])));
+        for (i, l) in leaves.iter().enumerate() {
+            c.push(*l);
+            let size = i + 1;
+            assert_eq!(c.len(), size);
+            for n in 0..=size {
+                assert_eq!(c.root(n), Some(root(&leaves[..n])), "root {n}");
+                for m in 0..n {
+                    assert_eq!(
+                        c.inclusion_proof(n, m),
+                        inclusion_proof(&leaves[..n], m),
+                        "inclusion {m} of {n}"
+                    );
+                }
+                for old in 0..=n {
+                    assert_eq!(
+                        c.consistency_proof(old, n),
+                        consistency_proof(&leaves[..n], old),
+                        "consistency {old} -> {n}"
+                    );
+                }
+            }
+        }
+        assert_eq!(c.root(71), None);
+        let mut t = c.clone();
+        t.truncate(37);
+        let mut fresh = MerkleCache::new();
+        for l in &leaves[..37] {
+            fresh.push(*l);
+        }
+        assert_eq!(t.levels, fresh.levels);
+        assert_eq!(c.inclusion_proof(70, 70), None);
+        assert_eq!(c.consistency_proof(3, 71), None);
     }
 }

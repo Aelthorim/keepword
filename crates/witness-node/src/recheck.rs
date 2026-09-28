@@ -1,14 +1,15 @@
 //! Rechecks: settling disagreements by reproduction, not by vote
 //! (docs/DESIGN.md §6.5).
 //!
-//! When the witnesses assigned to a URL disagree, any of them (or the
-//! requester) asks for a recheck. Witnesses drawn by public randomness from
+//! When the witnesses assigned to a URL disagree, any of them asks for a
+//! recheck. Witnesses drawn by public randomness from
 //! the disagreeing witnesses' countries, and not assigned to the URL, capture
 //! it again. Only versions they reproduce count. Real regional differences
 //! reproduce; a made-up version would need the liar to also control most of
 //! a random draw it can't influence.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::Result;
 use witness_core::assign::{self, Candidate, DiversityPolicy};
@@ -22,10 +23,34 @@ use crate::federation::SKEW_MS;
 
 /// Most countries one recheck request may name.
 pub const MAX_RECHECK_COUNTRIES: usize = 3;
+/// How long a candidate snapshot is used when no sync refreshes it.
+const CANDIDATES_TTL_MS: i64 = 120_000;
 
 impl Node {
     pub(crate) fn recheck_ms(&self) -> i64 {
         self.config.quorum.recheck_secs as i64 * 1000
+    }
+
+    /// Candidates for assignment, recomputed at most once a sync: verdicts
+    /// and every recheck message need them, and computing them looks up
+    /// every peer's location.
+    pub(crate) fn candidates_snapshot(&self, now: i64) -> Result<Arc<Vec<Candidate>>> {
+        let cached = self
+            .sched
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cands
+            .clone();
+        match cached {
+            Some((at, c)) if now - at < CANDIDATES_TTL_MS && at <= now => Ok(c),
+            _ => self.refresh_candidates(now),
+        }
+    }
+
+    pub(crate) fn refresh_candidates(&self, now: i64) -> Result<Arc<Vec<Candidate>>> {
+        let c = Arc::new(self.candidates(now)?);
+        self.sched.lock().unwrap_or_else(|p| p.into_inner()).cands = Some((now, c.clone()));
+        Ok(c)
     }
 
     pub(crate) fn window_ms(&self) -> i64 {
@@ -128,19 +153,14 @@ impl Node {
         if url.as_str() != b.url || !countries_ok || !fresh {
             return Ok(false);
         }
-        // Only the URL's assigned witnesses and its requesters can ask, so
-        // the work anyone can cause is bounded by assignment.
+        // Only the URL's assigned witnesses can ask, so the work anyone can
+        // cause is bounded by the share of assignments they win: requests,
+        // and the keys that make them, are free.
         let me = self.key.public();
-        let cands = self.candidates(now)?;
-        let eligible = b.requester == me
-            || self
-                .store
-                .requests_active(now)?
-                .iter()
-                .any(|q| q.body.url == b.url && q.body.requester == b.requester)
-            || self
-                .assigned_near(&url, slot, &cands)
-                .is_some_and(|a| a.contains(&b.requester));
+        let cands = self.candidates_snapshot(now)?;
+        let eligible = self
+            .assigned_near(&url, slot, &cands)
+            .is_some_and(|a| a.contains(&b.requester));
         if !eligible {
             return Ok(false);
         }

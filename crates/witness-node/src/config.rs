@@ -90,6 +90,11 @@ pub struct NetworkConfig {
     pub render_requests: bool,
     /// Most URLs this node captures for the network at once.
     pub max_request_watches: usize,
+    /// Requests per minute the public API answers from one address (an
+    /// IPv6 /64 counts as one), in bursts of up to as many; 0 = no limit.
+    /// Addresses on this machine or a private network aren't limited unless
+    /// `trust_forwarded_for` reveals the real client behind them.
+    pub api_requests_per_minute: u32,
 }
 
 impl Default for NetworkConfig {
@@ -113,6 +118,7 @@ impl Default for NetworkConfig {
             decline_hosts: vec![],
             render_requests: false,
             max_request_watches: 200,
+            api_requests_per_minute: 600,
         }
     }
 }

@@ -131,6 +131,8 @@ pub(crate) struct Schedule {
     last_audit: HashMap<WitnessKey, i64>,
     last_refresh: HashMap<String, i64>,
     last_prune: i64,
+    /// Candidates as of the last sync (see `candidates_snapshot`).
+    pub(crate) cands: Option<(i64, std::sync::Arc<Vec<Candidate>>)>,
 }
 
 impl Node {
@@ -763,6 +765,7 @@ impl Node {
                 }
             }
         }
+        self.refresh_candidates(now_ms())?;
         self.reconcile_requests().await?;
         self.run_rechecks().await?;
         report.new_attestations = self.refresh_followed().await?;
