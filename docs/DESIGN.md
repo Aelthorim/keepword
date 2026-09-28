@@ -522,7 +522,10 @@ country it was reported from, at least `quorum.recheck_quorum` (3) of the
 rechecking networks saw it and they are at least three quarters of the
 networks that rechecked there. Each draw is judged by the versions of the
 round it was drawn for, the one ending in its slot, even if a later round
-is current by the time it completes. Then:
+is current by the time it completes, and by each drawn witness's first
+capture after that round: a witness drawn again for a later slot captures
+again, maybe after the page changed, and that capture must not stand in for
+the earlier one. Then:
 
 - two or more versions confirmed: **Split**. Independent networks really
   are served different content. A split is an observation, not an

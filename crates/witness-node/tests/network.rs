@@ -732,17 +732,20 @@ async fn edits_are_not_failed_claims() {
         before,
         "witnesses charged for the current version by the draw of an earlier round"
     );
-    // The first round's draw was settled, by that round's versions: it
-    // reproduced both.
-    assert!(
-        nodes[1]
-            .node
-            .store
-            .round_outcomes(&url, 4)
-            .unwrap()
-            .contains(&"split".to_string()),
-        "the first round's draw was judged by its own versions"
-    );
+    // The first round's draw was settled everywhere, by that round's
+    // versions and the captures made for it: it reproduced both. (A
+    // witness drawn for both rounds captured the edited page for the
+    // second; that capture must not count for the first.)
+    for n in &nodes {
+        assert!(
+            n.node
+                .store
+                .round_outcomes(&url, 4)
+                .unwrap()
+                .contains(&"split".to_string()),
+            "the first round's draw was judged by its own versions and captures"
+        );
+    }
 }
 
 /// Rechecks cost the drawn witnesses a capture each. A witness assigned to

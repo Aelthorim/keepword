@@ -252,6 +252,6 @@ impl Node {
         let _ = self
             .fetch_attestations(&parsed, assigned, slot - self.window_ms())
             .await;
-        Ok(self.rounds(url, now)?.round_at(slot).len() >= 2)
+        Ok(self.rounds(url, now)?.round_at(slot).0.len() >= 2)
     }
 }

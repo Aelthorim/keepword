@@ -139,9 +139,11 @@ impl Rounds {
         )
     }
 
-    /// The versions of the round of the slot starting at `slot`.
-    pub(crate) fn round_at(&self, slot: i64) -> Vec<Version> {
-        self.versions(&self.evaluate(slot..slot + self.slot_ms))
+    /// The versions of the round of the slot starting at `slot`, and when
+    /// its window ended.
+    pub(crate) fn round_at(&self, slot: i64) -> (Vec<Version>, Option<i64>) {
+        let e = self.evaluate(slot..slot + self.slot_ms);
+        (self.versions(&e), e.window_end_ms)
     }
 
     /// A round's versions seen by located witnesses, most networks first.
@@ -257,10 +259,11 @@ impl Node {
             sightings: r.sightings(),
         };
         for (slot, countries) in self.store.disputes_for(url, self.recheck_since(now))? {
-            let versions = r.round_at(slot);
-            if versions.len() >= 2 {
-                rc.draws
-                    .push(self.draw(&r, slot, &countries, versions, now));
+            if let (versions, Some(end)) = r.round_at(slot) {
+                if versions.len() >= 2 {
+                    rc.draws
+                        .push(self.draw(&r, slot, end, &countries, versions, now));
+                }
             }
         }
 
@@ -441,12 +444,14 @@ impl Node {
         })
     }
 
-    /// The rechecks drawn for the round of the slot starting at `slot`, in
-    /// `countries`, as far as this node has fetched them.
+    /// The rechecks drawn for the round of the slot starting at `slot`
+    /// (whose window ended at `round_end`), in `countries`, as far as this
+    /// node has fetched them.
     fn draw(
         &self,
         r: &Rounds,
         slot: i64,
+        round_end: i64,
         countries: &[String],
         versions: Vec<Version>,
         now: i64,
@@ -467,18 +472,23 @@ impl Node {
                 let Some(l) = r.location(&k) else {
                     continue;
                 };
-                let latest = r
+                // Its first capture after the round: the one made for this
+                // draw. A witness drawn again for a later slot captures
+                // again, and that capture, maybe of a page edited since, must
+                // not stand in for this one: deadlines of successive draws
+                // overlap.
+                let first = r
                     .atts
                     .iter()
                     .map(|a| &a.attestation)
                     .filter(|a| {
                         a.witness == k
-                            && a.fetched_at_ms >= slot
+                            && a.fetched_at_ms > round_end
                             && a.fetched_at_ms <= deadline
                             && sample.is_some_and(|s| quorum::comparable(s, a))
                     })
-                    .max_by_key(|a| a.fetched_at_ms);
-                if let Some(a) = latest {
+                    .min_by_key(|a| a.fetched_at_ms);
+                if let Some(a) = first {
                     let res = RecheckResult {
                         country: l.country.clone(),
                         asn: l.asn,

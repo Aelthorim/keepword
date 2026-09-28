@@ -41,6 +41,10 @@ data; upgrading is recommended for every witness.
   gossiped heads oldest first, eight per audit, so a log could sign heads
   of the history its forks share (all consistent) and gossip them ahead of
   the ones that exposed it. The biggest heads are now checked first.
+- **Rechecks counted captures made for later draws.** Successive draws of
+  a URL overlap, and a witness drawn for two of them had its later
+  capture, of a page maybe edited since, count for both. Each draw now
+  counts each witness's first capture after the round it rechecks.
 
 ## [1.1.0] - 2026-09-28
 
