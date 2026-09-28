@@ -158,6 +158,22 @@ pub struct QuorumConfig {
     pub min_observers: usize,
     /// Count self-reported ASNs. Only for test networks.
     pub trust_self_reported: bool,
+    /// Rechecks drawn per country when witnesses disagree. Must be the same
+    /// on every witness.
+    pub recheck_size: usize,
+    /// Independent networks that must reproduce a version for it to count.
+    pub recheck_quorum: usize,
+    /// How long after a disputed round rechecks may run.
+    pub recheck_secs: u64,
+    /// A split alert needs this many confirmed splits…
+    pub split_confirmations: usize,
+    /// …among this many most recent settled rounds.
+    pub split_rounds: usize,
+    /// Most rechecks this node captures per hour.
+    pub max_rechecks_per_hour: u64,
+    /// Versions from a network prefix whose claims failed rechecks this
+    /// often in a week no longer trigger new rechecks from this node.
+    pub max_failed_claims: u64,
 }
 
 impl Default for QuorumConfig {
@@ -169,6 +185,13 @@ impl Default for QuorumConfig {
             asn_db: None,
             min_observers: 2,
             trust_self_reported: false,
+            recheck_size: 5,
+            recheck_quorum: 3,
+            recheck_secs: 1800,
+            split_confirmations: 3,
+            split_rounds: 4,
+            max_rechecks_per_hour: 30,
+            max_failed_claims: 5,
         }
     }
 }

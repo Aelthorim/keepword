@@ -514,6 +514,14 @@ fn verdict_html(v: &crate::consensus::VerdictView) -> String {
             b.push_str("<p class=silent>Split: independent witnesses saw different content at the same time, so the server treats visitors differently. Often harmless (localization, an A/B test, a rollout in progress, bot blocking); compare the versions before concluding it is cloaking.</p>");
             b.push_str(&group_rows(groups));
         }
+        Verdict::Disputed { groups, pending } => {
+            b.push_str(if *pending {
+                "<p class=muted>Disputed: the assigned witnesses disagree. Witnesses drawn at random from the same countries are capturing the page again; only versions they reproduce will count.</p>"
+            } else {
+                "<p class=muted>Disputed: the assigned witnesses disagree, and the rechecks reproduced no version clearly enough to decide.</p>"
+            });
+            b.push_str(&group_rows(groups));
+        }
         Verdict::Insufficient { groups } => {
             b.push_str(&format!(
                 "<p class=muted>Not enough independent witnesses yet ({} recent attestations).</p>",

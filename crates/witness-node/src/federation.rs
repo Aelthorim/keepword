@@ -178,6 +178,7 @@ impl Node {
             Gossip::Descriptor(_) | Gossip::Beacon(_) => None,
             Gossip::Request(r) => Some(r.body.requester),
             Gossip::Cancel(c) => Some(c.body.requester),
+            Gossip::Recheck(r) => Some(r.body.requester),
             Gossip::TreeHead(h) => Some(h.head.log),
             Gossip::Cosignature(c) => Some(c.body.cosigner),
             Gossip::Observation(o) => Some(o.body.observer),
@@ -194,6 +195,7 @@ impl Node {
             Gossip::Descriptor(d) => self.accept_descriptor(d, now)?,
             Gossip::Request(r) => self.accept_request(r, now)?,
             Gossip::Cancel(c) => self.accept_cancel(c, now)?,
+            Gossip::Recheck(r) => self.accept_recheck(r, now)?,
             Gossip::TreeHead(h) => {
                 if let Some(p) = self.store.peer(&h.head.log)? {
                     if let Some(known) = &p.head {
@@ -436,7 +438,12 @@ impl Node {
         Ok(self.assigned_among(seed, url, &self.candidates(now)?))
     }
 
-    fn assigned_among(&self, seed: &Digest, url: &url::Url, cands: &[Candidate]) -> Vec<Candidate> {
+    pub(crate) fn assigned_among(
+        &self,
+        seed: &Digest,
+        url: &url::Url,
+        cands: &[Candidate],
+    ) -> Vec<Candidate> {
         assign::assign(seed, &target::url_key(url), cands, &self.policy())
     }
 
@@ -751,6 +758,7 @@ impl Node {
             }
         }
         self.reconcile_requests().await?;
+        self.run_rechecks().await?;
         report.new_attestations = self.refresh_followed().await?;
         self.review_verdicts()?;
         self.prune_if_due()?;
@@ -984,6 +992,15 @@ impl Node {
                         .iter()
                         .map(|c| c.key),
                 );
+            }
+        }
+        // And the witnesses drawn to recheck its disputed rounds.
+        for (end, countries) in self
+            .store
+            .disputes_for(url.as_str(), self.recheck_since(now))?
+        {
+            for c in countries {
+                targets.extend(self.recheckers(&url, end, &c, &cands));
             }
         }
         targets.remove(&me);

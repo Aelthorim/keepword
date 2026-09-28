@@ -31,7 +31,7 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE attestations (
@@ -153,7 +153,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         match v {
-            0..=3 => {
+            0..=4 => {
                 let tx = conn.unchecked_transaction()?;
                 if v == 0 {
                     tx.execute_batch(SCHEMA)?;
@@ -164,7 +164,10 @@ impl Store {
                 if v <= 2 {
                     tx.execute_batch(net::SCHEMA_V3)?;
                 }
-                tx.execute_batch(net::SCHEMA_V4)?;
+                if v <= 3 {
+                    tx.execute_batch(net::SCHEMA_V4)?;
+                }
+                tx.execute_batch(net::SCHEMA_V5)?;
                 tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
                 tx.commit()?;
             }

@@ -168,6 +168,48 @@ CREATE TABLE log_heads (
 ALTER TABLE cosignatures ADD COLUMN at INTEGER;
 "#;
 
+pub(crate) const SCHEMA_V5: &str = r#"
+-- Recheck requests for disputed URLs, one row per requester.
+CREATE TABLE disputes (
+    url         TEXT NOT NULL,
+    window_end  INTEGER NOT NULL,
+    signer      BLOB NOT NULL,
+    countries   TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    PRIMARY KEY (url, window_end, signer)
+);
+
+-- Rechecks this node was drawn for.
+CREATE TABLE recheck_jobs (
+    url        TEXT NOT NULL,
+    window_end INTEGER NOT NULL,
+    added_at   INTEGER NOT NULL,
+    done_at    INTEGER,
+    PRIMARY KEY (url, window_end)
+);
+
+-- The settled verdict of each comparison round, for confirming splits
+-- across rounds.
+CREATE TABLE round_outcomes (
+    url        TEXT NOT NULL,
+    window_end INTEGER NOT NULL,
+    outcome    TEXT NOT NULL,
+    at         INTEGER NOT NULL,
+    PRIMARY KEY (url, window_end)
+);
+
+-- Versions that rechecks didn't reproduce, by the network prefix the
+-- reporting witness was seen connecting from. Keys are free, addresses
+-- aren't.
+CREATE TABLE failed_claims (
+    prefix     TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    window_end INTEGER NOT NULL,
+    at         INTEGER NOT NULL,
+    PRIMARY KEY (prefix, url, window_end)
+);
+"#;
+
 /// How long pruned data is kept.
 pub struct Retention {
     /// Cosignatures superseded by a newer one from the same cosigner.
@@ -179,6 +221,9 @@ pub struct Retention {
     pub foreign_ms: i64,
     pub reputation_ms: i64,
     pub log_heads_ms: i64,
+    pub disputes_ms: i64,
+    pub outcomes_ms: i64,
+    pub failed_claims_ms: i64,
 }
 
 impl Default for Retention {
@@ -192,6 +237,9 @@ impl Default for Retention {
             foreign_ms: 90 * DAY,
             reputation_ms: 60 * DAY,
             log_heads_ms: 7 * DAY,
+            disputes_ms: 2 * DAY,
+            outcomes_ms: 30 * DAY,
+            failed_claims_ms: 7 * DAY,
         }
     }
 }
@@ -916,6 +964,150 @@ impl Store {
         Ok(all.into_iter().next())
     }
 
+    // ----------------------------------------------------------- rechecks
+
+    /// Store a recheck request. Returns true if it's new.
+    pub fn dispute_insert(
+        &self,
+        url: &str,
+        window_end: i64,
+        signer: &WitnessKey,
+        countries: &[String],
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.db().execute(
+            "INSERT OR IGNORE INTO disputes (url, window_end, signer, countries, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                url,
+                window_end,
+                signer.0.as_slice(),
+                serde_json::to_string(countries)?,
+                now_ms
+            ],
+        )? > 0)
+    }
+
+    /// Whether `signer` already asked for a recheck of this round.
+    pub fn dispute_by(&self, url: &str, window_end: i64, signer: &WitnessKey) -> Result<bool> {
+        Ok(self.db().query_row(
+            "SELECT EXISTS(SELECT 1 FROM disputes WHERE url = ?1 AND window_end = ?2 AND signer = ?3)",
+            params![url, window_end, signer.0.as_slice()],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Rounds of `url` with recheck requests since `since_ms` (by window
+    /// end), with the union of the countries asked for.
+    pub fn disputes_for(&self, url: &str, since_ms: i64) -> Result<Vec<(i64, Vec<String>)>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT window_end, countries FROM disputes WHERE url = ?1 AND window_end >= ?2
+             ORDER BY window_end",
+        )?;
+        let rows = st.query_map(params![url, since_ms], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out: Vec<(i64, Vec<String>)> = Vec::new();
+        for row in rows {
+            let (end, c) = row?;
+            let c: Vec<String> = json(&c)?;
+            match out.last_mut() {
+                Some((e, all)) if *e == end => {
+                    for x in c {
+                        if !all.contains(&x) {
+                            all.push(x);
+                        }
+                    }
+                }
+                _ => out.push((end, c)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Queue a recheck this node was drawn for. Returns true if new.
+    pub fn recheck_job_add(&self, url: &str, window_end: i64, now_ms: i64) -> Result<bool> {
+        Ok(self.db().execute(
+            "INSERT OR IGNORE INTO recheck_jobs (url, window_end, added_at) VALUES (?1, ?2, ?3)",
+            params![url, window_end, now_ms],
+        )? > 0)
+    }
+
+    /// Rechecks still to do, oldest first.
+    pub fn recheck_jobs_pending(&self, limit: u32) -> Result<Vec<(String, i64)>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT url, window_end FROM recheck_jobs WHERE done_at IS NULL
+             ORDER BY added_at LIMIT ?1",
+        )?;
+        let rows = st.query_map([limit], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn recheck_job_done(&self, url: &str, window_end: i64, now_ms: i64) -> Result<()> {
+        self.db().execute(
+            "UPDATE recheck_jobs SET done_at = ?3 WHERE url = ?1 AND window_end = ?2",
+            params![url, window_end, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Rechecks done since `since_ms`, for the hourly budget.
+    pub fn rechecks_done_since(&self, since_ms: i64) -> Result<u64> {
+        Ok(self.db().query_row(
+            "SELECT COUNT(*) FROM recheck_jobs WHERE done_at >= ?1",
+            [since_ms],
+            |r| r.get::<_, i64>(0),
+        )? as u64)
+    }
+
+    /// Record a round's settled verdict. Returns true if it's new.
+    pub fn round_outcome_set(
+        &self,
+        url: &str,
+        window_end: i64,
+        outcome: &str,
+        now_ms: i64,
+    ) -> Result<bool> {
+        Ok(self.db().execute(
+            "INSERT OR IGNORE INTO round_outcomes (url, window_end, outcome, at) VALUES (?1, ?2, ?3, ?4)",
+            params![url, window_end, outcome, now_ms],
+        )? > 0)
+    }
+
+    /// The last `n` settled outcomes for `url`, newest first.
+    pub fn round_outcomes(&self, url: &str, n: u32) -> Result<Vec<String>> {
+        let db = self.db();
+        let mut st = db.prepare(
+            "SELECT outcome FROM round_outcomes WHERE url = ?1 ORDER BY window_end DESC LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![url, n], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn failed_claim_add(
+        &self,
+        prefix: &str,
+        url: &str,
+        window_end: i64,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.db().execute(
+            "INSERT OR IGNORE INTO failed_claims (prefix, url, window_end, at) VALUES (?1, ?2, ?3, ?4)",
+            params![prefix, url, window_end, now_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn failed_claims(&self, prefix: &str, since_ms: i64) -> Result<u64> {
+        Ok(self.db().query_row(
+            "SELECT COUNT(*) FROM failed_claims WHERE prefix = ?1 AND at >= ?2",
+            params![prefix, since_ms],
+            |r| r.get::<_, i64>(0),
+        )? as u64)
+    }
+
     // ------------------------------------------------------------ pruning
 
     /// Delete network data that is no longer needed. Evidence this node
@@ -956,6 +1148,22 @@ impl Store {
         n += db.execute(
             "DELETE FROM log_heads WHERE received_at < ?1",
             [now_ms - keep.log_heads_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM disputes WHERE received_at < ?1",
+            [now_ms - keep.disputes_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM recheck_jobs WHERE added_at < ?1",
+            [now_ms - keep.disputes_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM round_outcomes WHERE at < ?1",
+            [now_ms - keep.outcomes_ms],
+        )?;
+        n += db.execute(
+            "DELETE FROM failed_claims WHERE at < ?1",
+            [now_ms - keep.failed_claims_ms],
         )?;
         Ok(n)
     }

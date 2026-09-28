@@ -14,7 +14,7 @@ use witness_core::quorum::Verdict;
 use witness_node::Node;
 use witness_node::config::Config;
 
-/// Serves /page/*; clients whose User-Agent contains "cloaked" get a
+/// Serves pages; clients whose User-Agent contains "cloaked" get a
 /// different version.
 async fn content_server() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -32,7 +32,11 @@ async fn content_server() -> String {
                     }
                 }
                 let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
-                let cloaked = req.contains("user-agent: cloaked");
+                // Also: "/regional" pages differ for witnesses in France
+                // (user agents with "-fr"), "/lie" pages for "liar".
+                let cloaked = req.contains("user-agent: cloaked")
+                    || (req.starts_with("get /regional") && req.contains("-fr"))
+                    || (req.starts_with("get /lie") && req.contains("user-agent: liar"));
                 let text = if cloaked {
                     "Prices start at 99 euros."
                 } else {
@@ -273,6 +277,8 @@ async fn four_witnesses() {
     assert!(!nodes[1].node.ingest(Gossip::Alert(fake)).unwrap());
 
     // Cloaking: everyone captures the same URL; C and D get another page.
+    // Every witness is assigned, so nobody is left to recheck it: the
+    // disagreement stays disputed and raises no alert.
     let cloaked = format!("{site}/page/three");
     for n in &nodes {
         n.node.capture(&cloaked, false).await.unwrap();
@@ -284,13 +290,16 @@ async fn four_witnesses() {
     for n in &nodes {
         let v = n.node.verdict(&cloaked).unwrap();
         match &v.evaluation.verdict {
-            Verdict::Split { groups } => assert_eq!(groups.len(), 2),
-            other => panic!("expected a split verdict, got {other:?}"),
+            Verdict::Disputed { groups, pending } => {
+                assert_eq!(groups.len(), 2);
+                assert!(!pending, "no rechecker exists, so nothing is pending");
+            }
+            other => panic!("expected a disputed verdict, got {other:?}"),
         }
         let alerts = n.node.store.alerts(50).unwrap();
         assert!(
-            alerts.iter().any(|a| a.body.kind == AlertKind::Split && a.body.url.as_deref() == Some(&cloaked)),
-            "split alert did not reach every node"
+            !alerts.iter().any(|a| a.body.kind == AlertKind::Split),
+            "an unconfirmed disagreement raised a split alert"
         );
     }
 
@@ -394,4 +403,153 @@ async fn sampled_gossip_and_audits() {
             );
         }
     }
+}
+
+/// Rechecks: when the assigned witnesses disagree, witnesses drawn at random
+/// from the same countries capture the page again, and only versions they
+/// reproduce count. A lone dissenter is overruled; a real regional
+/// difference is confirmed, and alerted once it repeats.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rechecks_settle_disputes() {
+    let site = content_server().await;
+    let tweak = |c: &mut Config| {
+        c.network.replication = 3;
+        c.network.max_per_country = 2;
+        c.quorum.window_secs = 2;
+        c.quorum.recheck_secs = 120;
+        c.quorum.recheck_size = 3;
+        c.quorum.recheck_quorum = 2;
+        c.quorum.split_confirmations = 2;
+        c.quorum.split_rounds = 3;
+    };
+    // Six witnesses in Germany (the first one sees "/lie" pages its own
+    // way) and six in France: enough in each country that some are left to
+    // recheck after assignment (of this epoch and the last) takes its share.
+    let first = spawn_with(64600, "DE", "liar-0", vec![], tweak).await;
+    let boot = vec![first.endpoint.clone()];
+    let mut nodes = vec![first];
+    for i in 1..12u32 {
+        let (country, ua) = if i < 6 {
+            ("DE", format!("w-de-{i}"))
+        } else {
+            ("FR", format!("w-fr-{i}"))
+        };
+        nodes.push(spawn_with(64600 + i, country, &ua, boot.clone(), tweak).await);
+    }
+    sync_all(&nodes, 3).await;
+    for n in &nodes {
+        assert_eq!(n.node.store.peers().unwrap().len(), 11, "peer count");
+    }
+    let now = witness_core::now_ms();
+    let (seed, _) = nodes[1]
+        .node
+        .epoch_seed_cached(witness_core::beacon::epoch_of(now))
+        .unwrap();
+    let assigned = |url: &str| -> Vec<usize> {
+        let u = witness_core::target::canonical_url(url).unwrap();
+        let keys: Vec<_> = nodes[1]
+            .node
+            .assigned(&seed, &u, now)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+        (0..nodes.len())
+            .filter(|i| keys.contains(&nodes[*i].node.key.public()))
+            .collect()
+    };
+    // One round: the assigned witnesses capture, everyone fetches, the
+    // disagreement is noticed, rechecks are asked for and made, fetched,
+    // and settled.
+    let round = |url: String, who: Vec<usize>, first: bool| {
+        let nodes = &nodes;
+        async move {
+            for i in &who {
+                nodes[*i].node.capture(&url, false).await.unwrap();
+            }
+            for n in nodes {
+                n.node.refresh_url(&url).await.unwrap();
+            }
+            // Until a draw settles it; later rounds show the versions
+            // the recent draws confirmed.
+            if first {
+                let v = nodes[1].node.verdict(&url).unwrap();
+                assert!(
+                    matches!(
+                        v.evaluation.verdict,
+                        Verdict::Disputed { pending: true, .. }
+                    ),
+                    "before rechecks: {:?}",
+                    v.evaluation.verdict
+                );
+            }
+            sync_all(nodes, 2).await;
+            for n in nodes {
+                n.node.refresh_url(&url).await.unwrap();
+            }
+            sync_all(nodes, 1).await;
+        }
+    };
+
+    // A lone dissenter: the rechecks don't reproduce what it reports.
+    let lie = (0..500)
+        .map(|i| format!("{site}/lie/{i}"))
+        .find(|u| assigned(u).contains(&0))
+        .expect("a URL assigned to the dissenter");
+    round(lie.clone(), assigned(&lie), true).await;
+    let liar = nodes[0].node.key.public();
+    for n in &nodes[1..] {
+        let v = n.node.verdict(&lie).unwrap();
+        assert!(v.rechecks >= 2, "rechecks counted: {}", v.rechecks);
+        match &v.evaluation.verdict {
+            Verdict::Agreed { group, dissenters } => {
+                assert!(group.asns.len() >= 3);
+                assert_eq!(dissenters, &vec![liar]);
+            }
+            other => panic!("expected the dissent overruled, got {other:?}"),
+        }
+        assert!(
+            !n.node
+                .store
+                .alerts(50)
+                .unwrap()
+                .iter()
+                .any(|a| a.body.kind == AlertKind::Split)
+        );
+    }
+    // The dissenter's network is charged with a failed claim.
+    let charged = nodes[1]
+        .node
+        .store
+        .failed_claims("127.0.0.0/24", 0)
+        .unwrap();
+    assert_eq!(charged, 1, "one failed claim for one round");
+
+    // A real regional difference: witnesses in France see another page,
+    // and so do the French witnesses drawn to recheck it.
+    let regional = format!("{site}/regional/offer");
+    let who = assigned(&regional);
+    round(regional.clone(), who.clone(), true).await;
+    let split_alert =
+        |n: &TestNode| {
+            n.node.store.alerts(50).unwrap().iter().any(|a| {
+                a.body.kind == AlertKind::Split && a.body.url.as_deref() == Some(&regional)
+            })
+        };
+    for n in &nodes {
+        let v = n.node.verdict(&regional).unwrap();
+        match &v.evaluation.verdict {
+            Verdict::Split { groups } => assert_eq!(groups.len(), 2),
+            other => panic!("expected a confirmed split, got {other:?}"),
+        }
+        assert!(!split_alert(n), "one round is not enough for an alert");
+    }
+    // The same again in the next round: now it is alerted.
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    round(regional.clone(), who, false).await;
+    sync_all(&nodes, 1).await;
+    assert!(
+        nodes.iter().all(split_alert),
+        "a repeated, confirmed split raises an alert everywhere"
+    );
 }
