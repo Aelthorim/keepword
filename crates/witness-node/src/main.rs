@@ -1044,6 +1044,33 @@ fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
             cfg.quorum.min_observers
         ));
     }
+    // Behind a CDN the node isn't told about, every peer seems to connect
+    // from the CDN, and that is where the node places them.
+    if !node.proxies.cloudflare() {
+        let me = node.key.public();
+        let mut via = 0;
+        for p in &peers {
+            if let Some(o) = node.store.observation(&p.key, &me)? {
+                via += usize::from(witness_node::proxies::is_cloudflare(o.body.ip));
+            }
+        }
+        if via > 0 {
+            let trust = if cfg.network.trust_forwarded_for {
+                ""
+            } else {
+                " and network.trust_forwarded_for = true"
+            };
+            w.push(format!(
+                "{via} peer(s) seem to connect from Cloudflare's addresses; behind Cloudflare, \
+                 set network.trusted_proxies = [\"cloudflare\"]{trust} (docs/INSTALL.md)"
+            ));
+        }
+    }
+    if !cfg.network.trusted_proxies.is_empty() && !cfg.network.trust_forwarded_for {
+        w.push(
+            "network.trusted_proxies does nothing without network.trust_forwarded_for".to_string(),
+        );
+    }
     let failing = peers
         .iter()
         .filter(|p| p.endpoint.is_some() && p.last_error.is_some())

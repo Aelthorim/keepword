@@ -109,12 +109,13 @@ async fn rate_limit(
     req: Request,
     next: Next,
 ) -> Response {
-    let ip = client_ip(&node, addr, req.headers());
-    // Without the real client address (a local reverse proxy, a LAN), every
-    // client would share one bucket.
-    let unknown =
-        !node.config.network.trust_forwarded_for && !witness_capture::netpolicy::is_public(ip);
-    if unknown || limiter.allow(ip, Instant::now()) {
+    // Without the real client address (a reverse proxy this node doesn't
+    // trust, a LAN, proxies that didn't say), every client would share one
+    // bucket.
+    let known = node.proxies.client(addr.ip(), req.headers()).filter(|ip| {
+        node.config.network.trust_forwarded_for || witness_capture::netpolicy::is_public(*ip)
+    });
+    if known.is_none_or(|ip| limiter.allow(ip, Instant::now())) {
         next.run(req).await
     } else {
         let mut r =
@@ -342,28 +343,6 @@ async fn gossip_pull(
     }))
 }
 
-/// Where a request came from. Behind a reverse proxy that is the address
-/// the proxy appended to X-Forwarded-For, but only if the connection came
-/// from the proxy: from anywhere else, say a published container port, the
-/// header is whatever the client wrote, and observation receipts (where a
-/// peer connects from, which places it) must not be forgeable.
-fn client_ip(node: &Node, addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
-    if node.config.network.trust_forwarded_for && !witness_capture::netpolicy::is_public(addr.ip())
-    {
-        if let Some(ip) = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            // The proxy appends the address it saw; anything before it
-            // came from the client and can be forged.
-            .and_then(|v| v.rsplit(',').next())
-            .and_then(|v| v.trim().parse().ok())
-        {
-            return ip;
-        }
-    }
-    addr.ip()
-}
-
 async fn gossip_push(
     State(node): State<Arc<Node>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -373,9 +352,11 @@ async fn gossip_push(
     if req.messages.len() > 1000 {
         return Err(bad("at most 1000 messages per push"));
     }
-    let ip = client_ip(&node, addr, &headers);
+    // Where the peer connects from places it, so this must not be
+    // forgeable (see `proxies`).
+    let from = node.proxies.client(addr.ip(), &headers);
     let node2 = node.clone();
-    let resp = tokio::task::spawn_blocking(move || node2.receive_push(req, ip)).await??;
+    let resp = tokio::task::spawn_blocking(move || node2.receive_push(req, from)).await??;
     Ok(Json(resp).into_response())
 }
 

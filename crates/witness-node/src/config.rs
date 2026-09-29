@@ -73,11 +73,15 @@ pub struct NetworkConfig {
     pub cosign_interval_secs: u64,
     /// Serve raw blobs to peers, for these hosts only (and their subdomains).
     pub serve_content_hosts: Vec<String>,
-    /// Use the last X-Forwarded-For address, the one your proxy added, as
-    /// the client IP (only behind a reverse proxy you control). Only taken
-    /// from connections from this machine or a private network, where
-    /// such a proxy sits.
+    /// Take the client address from X-Forwarded-For, as written by your
+    /// reverse proxy (only behind a proxy you control). Only believed from
+    /// connections from this machine or a private network, where such a
+    /// proxy sits, and from `trusted_proxies`.
     pub trust_forwarded_for: bool,
+    /// A CDN in front of your reverse proxy: "cloudflare", or its address
+    /// ranges (`151.101.0.0/16`). Without it, every peer seems to connect
+    /// from the CDN. Needs `trust_forwarded_for`.
+    pub trusted_proxies: Vec<String>,
     /// Let peers and network services (drand, calendars, Esplora) be on
     /// private addresses. Peer endpoints come from untrusted descriptors, so
     /// only enable this for a closed network on a LAN.
@@ -116,6 +120,7 @@ impl Default for NetworkConfig {
             cosign_interval_secs: 3600,
             serve_content_hosts: vec![],
             trust_forwarded_for: false,
+            trusted_proxies: vec![],
             allow_private_peers: false,
             decline_hosts: vec![],
             render_requests: false,
@@ -347,6 +352,10 @@ impl Config {
                 }
             }
         }
+        crate::proxies::Proxies::new(
+            self.network.trust_forwarded_for,
+            &self.network.trusted_proxies,
+        )?;
         Ok(())
     }
 

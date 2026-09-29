@@ -1376,8 +1376,9 @@ impl Node {
     }
 
     /// Handle a push: ingest the messages and, if the envelope proves who
-    /// sent them, return a receipt of the address they came from.
-    pub fn receive_push(&self, req: PushRequest, from_ip: IpAddr) -> Result<PushResponse> {
+    /// sent them, return a receipt of the address they came from. `from_ip`
+    /// is `None` when the proxies in front of this node didn't say.
+    pub fn receive_push(&self, req: PushRequest, from_ip: Option<IpAddr>) -> Result<PushResponse> {
         let now = now_ms();
         let env = &req.envelope;
         let authentic = env.verify().is_ok()
@@ -1393,25 +1394,32 @@ impl Node {
             }
         }
         let me = self.key.public();
-        let observation = if !authentic {
-            None
-        } else if let Some(o) = self.store.observation(&env.body.from, &me)?.filter(|o| {
-            o.body.ip == from_ip && now - o.body.observed_at_ms < OBSERVATION_REFRESH_MS
-        }) {
-            // Nothing new to tell the network.
-            Some(o)
-        } else {
-            let o = Signed::sign(
-                Observation {
-                    subject: env.body.from,
-                    ip: from_ip,
-                    observed_at_ms: now,
-                    observer: self.key.public(),
-                },
-                &self.key,
-            )?;
-            self.ingest(Gossip::Observation(o.clone()))?;
-            Some(o)
+        // Nothing to vouch for if the sender is unproven, or the proxies in
+        // front of this node didn't say where it is.
+        let observation = match from_ip.filter(|_| authentic) {
+            None => None,
+            Some(ip) => {
+                let known = self.store.observation(&env.body.from, &me)?.filter(|o| {
+                    o.body.ip == ip && now - o.body.observed_at_ms < OBSERVATION_REFRESH_MS
+                });
+                match known {
+                    // Nothing new to tell the network.
+                    Some(o) => Some(o),
+                    None => {
+                        let o = Signed::sign(
+                            Observation {
+                                subject: env.body.from,
+                                ip,
+                                observed_at_ms: now,
+                                observer: me,
+                            },
+                            &self.key,
+                        )?;
+                        self.ingest(Gossip::Observation(o.clone()))?;
+                        Some(o)
+                    }
+                }
+            }
         };
         Ok(PushResponse {
             accepted,

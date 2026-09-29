@@ -14,7 +14,7 @@ use witness_core::statement::Signed;
 use witness_core::{Keypair, now_ms};
 use witness_node::Node;
 use witness_node::config::Config;
-use witness_node::federation::PushRequest;
+use witness_node::federation::{PushRequest, PushResponse};
 
 fn new_node() -> (tempfile::TempDir, Node) {
     let dir = tempfile::tempdir().unwrap();
@@ -40,7 +40,7 @@ fn push(node: &Node, from: &Keypair, messages: Vec<Gossip>) -> usize {
     .unwrap();
     node.receive_push(
         PushRequest { envelope, messages },
-        "198.51.100.7".parse().unwrap(),
+        Some("198.51.100.7".parse().unwrap()),
     )
     .unwrap()
     .accepted
@@ -175,6 +175,10 @@ struct TestNode {
 }
 
 async fn spawn(asn: u32, peers: Vec<String>) -> TestNode {
+    spawn_with(asn, peers, |_| {}).await
+}
+
+async fn spawn_with(asn: u32, peers: Vec<String>, tweak: impl FnOnce(&mut Config)) -> TestNode {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -189,6 +193,7 @@ async fn spawn(asn: u32, peers: Vec<String>) -> TestNode {
     cfg.beacon.allow_insecure_seed = true;
     cfg.quorum.trust_self_reported = true;
     cfg.anchor.calendars = vec![];
+    tweak(&mut cfg);
     Node::init(dir.path(), &cfg).unwrap();
     let node = Arc::new(Node::open(dir.path()).unwrap());
     let app = witness_node::api::router(node.clone());
@@ -237,4 +242,88 @@ async fn dead_peers_dont_starve_gossip() {
             "a live peer was left out of the round"
         );
     }
+}
+
+/// Where a peer connects from places it in a network. Behind Cloudflare
+/// and a reverse proxy, connections come from the proxy, and the address
+/// the proxy saw is Cloudflare's: the node must sign for the peer's own
+/// address, and a client going around Cloudflare must not get to claim one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cdn_is_never_a_peers_location() {
+    // The test connects from 127.0.0.1, like a proxy on the same machine.
+    let seed = spawn_with(64901, vec![], |c| {
+        c.network.trust_forwarded_for = true;
+        c.network.trusted_proxies = vec!["cloudflare".into()];
+    })
+    .await;
+    let peer = Keypair::generate().unwrap();
+    let http = reqwest::Client::new();
+    let mut sent = 0;
+    let mut push = async |headers: &[(&str, &str)]| {
+        sent += 1;
+        let envelope = Signed::sign(
+            PushEnvelope {
+                from: peer.public(),
+                to: seed.node.key.public(),
+                sent_at_ms: now_ms() + sent,
+                payload: witness_core::net::payload_digest(&[]),
+            },
+            &peer,
+        )
+        .unwrap();
+        let body = serde_json::to_vec(&PushRequest {
+            envelope,
+            messages: vec![],
+        })
+        .unwrap();
+        let mut req = http
+            .post(format!("{}/v1/gossip", seed.endpoint))
+            .header("content-type", "application/json")
+            .body(body);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = req.send().await.unwrap().error_for_status().unwrap();
+        let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
+        resp.observation.map(|o| o.body.ip)
+    };
+    let ip = |s: &str| Some(s.parse::<std::net::IpAddr>().unwrap());
+    let edge = "172.70.4.1";
+    // A proxy that doesn't trust Cloudflare writes only the edge's address.
+    assert_eq!(
+        push(&[
+            ("x-forwarded-for", edge),
+            ("cf-connecting-ip", "81.2.69.160")
+        ])
+        .await,
+        ip("81.2.69.160")
+    );
+    // One that does keeps whatever the client put before it.
+    let xff = format!("9.9.9.9, 81.2.69.161, {edge}");
+    assert_eq!(
+        push(&[
+            ("x-forwarded-for", &xff),
+            ("cf-connecting-ip", "81.2.69.161")
+        ])
+        .await,
+        ip("81.2.69.161")
+    );
+    // Around Cloudflare, straight to the proxy.
+    assert_eq!(
+        push(&[
+            ("x-forwarded-for", "81.2.69.162"),
+            ("cf-connecting-ip", "9.9.9.9")
+        ])
+        .await,
+        ip("81.2.69.162")
+    );
+    // Cloudflare's own address is nobody's location.
+    assert_eq!(push(&[("x-forwarded-for", edge)]).await, None);
+    let stored = seed
+        .node
+        .store
+        .observation(&peer.public(), &seed.node.key.public())
+        .unwrap()
+        .unwrap();
+    assert_eq!(Some(stored.body.ip), ip("81.2.69.162"));
 }

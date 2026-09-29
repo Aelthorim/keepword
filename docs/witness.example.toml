@@ -41,6 +41,7 @@ cosign_interval_secs = 3600      # how often to audit each log
 # Serve raw captured content to others only for these hosts.
 serve_content_hosts = ["tagesschau.de", "bund.de"]
 trust_forwarded_for = false  # true only behind your own reverse proxy
+trusted_proxies = []       # a CDN in front of that proxy: ["cloudflare"] or ranges
 # Never capture these hosts for network requests (still relayed).
 decline_hosts = ["intranet.example"]
 max_request_watches = 200  # most URLs captured for the network at once

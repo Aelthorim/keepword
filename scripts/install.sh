@@ -32,6 +32,7 @@ DOMAIN=""
 ENDPOINT=""
 PUBLIC_API=""
 PEERS=""
+SEEDS=1
 RETAIN=""
 RENDER=0
 NOTARY=0
@@ -62,6 +63,8 @@ Network:
   --public-api ADDR     Bind the API directly on ADDR (e.g. 0.0.0.0:8481)
   --endpoint URL        Public API URL to advertise (default: from --domain)
   --peer URL            Bootstrap peer; repeat for several
+  --no-seeds            Don't join through the project's seed witnesses (a
+                        separate network, or a test install)
   --no-asn-db           Skip the IP-to-ASN table (verdicts need it)
 
 Features:
@@ -116,6 +119,7 @@ while [ $# -gt 0 ]; do
         --public-api) need_arg "$@"; PUBLIC_API=$2; shift ;;
         --endpoint) need_arg "$@"; ENDPOINT=$2; shift ;;
         --peer) need_arg "$@"; PEERS="$PEERS $2"; shift ;;
+        --no-seeds) SEEDS=0 ;;
         --no-asn-db) ASN_DB=0 ;;
         --retain) need_arg "$@"; RETAIN=$2; shift ;;
         --render) RENDER=1 ;;
@@ -526,6 +530,10 @@ if [ -n "$PEERS" ]; then
     for p in $PEERS; do list="$list${list:+, }\"$p\""; done
     witness config set network.peers "[$list]"
     info "bootstrap peers:$PEERS"
+fi
+if [ "$SEEDS" -eq 0 ]; then
+    witness config set network.seeds false
+    info "not joining through the default seeds"
 fi
 if [ -z "$(witness config get network.endpoint)" ]; then
     if [ -n "$PUBLIC_API" ]; then

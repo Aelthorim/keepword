@@ -9,6 +9,7 @@ pub mod consensus;
 pub mod daemon;
 pub mod federation;
 pub mod httpc;
+pub mod proxies;
 pub mod recheck;
 pub mod sysdir;
 pub mod vantage;
@@ -42,6 +43,8 @@ pub struct Node {
     /// Client for peers and external services.
     pub net: httpc::Http,
     pub asn_db: Option<vantage::AsnDb>,
+    /// The proxies in front of the API, for where requests come from.
+    pub proxies: proxies::Proxies,
     /// This node's signed descriptor; see `Node::descriptor`.
     descriptor: Mutex<witness_core::statement::Signed<witness_core::net::Descriptor>>,
     seen_envelopes: Mutex<HashMap<Digest, i64>>,
@@ -95,6 +98,10 @@ impl Node {
             .as_deref()
             .map(vantage::AsnDb::load)
             .transpose()?;
+        let proxies = proxies::Proxies::new(
+            config.network.trust_forwarded_for,
+            &config.network.trusted_proxies,
+        )?;
         let placeholder = witness_core::statement::Signed::sign(
             witness_core::net::Descriptor {
                 key: key.public(),
@@ -114,6 +121,7 @@ impl Node {
             http,
             net,
             asn_db,
+            proxies,
             descriptor: Mutex::new(placeholder),
             seen_envelopes: Mutex::new(HashMap::new()),
             sched: Mutex::new(Default::default()),

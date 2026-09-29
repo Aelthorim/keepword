@@ -121,15 +121,15 @@ the log is only verifiable against it. A new key is a new witness.
 ### Your own reverse proxy
 
 The proxy must forward `/v1/` to `127.0.0.1:8481` and put the real client
-address in `X-Forwarded-For`. The node uses the **last** address in that
-header, the one your proxy added. The installer turns on
+address in `X-Forwarded-For`. The installer turns on
 `network.trust_forwarded_for` when you pass `--domain`, because observation
 receipts, and with them every peer's corroborated location, depend on it.
-The node only takes the header from connections from this machine or a
-private network, so the proxy must run there: with the API exposed
-directly, clients could otherwise claim any address. Don't put a CDN in
-front of the API either: the node would record the CDN's addresses as its
-peers' locations.
+The node reads that header from the end: the last address is the one your
+proxy added, and addresses on this machine or a private network (more
+proxies of yours) are passed over until another one comes. It only reads
+the header on connections from this machine or a private network, so the
+proxy must run there: with the API exposed directly, clients could
+otherwise claim any address.
 
 nginx:
 
@@ -147,6 +147,32 @@ server {
     location / { return 404; }
 }
 ```
+
+### Behind Cloudflare or another CDN
+
+Through a CDN, the address your proxy sees is the CDN's, and the node would
+place every peer in the CDN's network (`witness net status` warns when
+peers seem to connect from Cloudflare). Tell the node about the CDN:
+
+```sh
+witness config set network.trusted_proxies '["cloudflare"]'
+sudo systemctl restart witness
+```
+
+A request that reached your proxy from one of Cloudflare's addresses then
+counts as coming from the address in `CF-Connecting-IP`, which Cloudflare
+sets itself. Your proxy needs no change as long as it passes that header on,
+as Caddy and nginx do. A request that didn't come through Cloudflare, say
+straight to your server's address, still counts as coming from where it
+did, whatever headers it carries. Peers are programs, not browsers: keep
+Cloudflare from challenging requests to `/v1/` (Bot Fight Mode, "Under
+Attack" mode).
+
+For another CDN, list its address ranges instead, e.g.
+`'["151.101.0.0/16"]'`. The node then takes the address before the CDN's in
+`X-Forwarded-For`, so your proxy must keep what the CDN wrote there: Caddy
+with `trusted_proxies` in its global `servers` options, nginx with
+`$proxy_add_x_forwarded_for` instead of `$remote_addr`.
 
 ### Uninstalling
 
@@ -176,7 +202,9 @@ Or `docker compose -f packaging/docker/compose.yaml up -d`. Settings:
 | `WITNESS_RETAIN` | `full`, `normalized` or `none` (first start) |
 | `WITNESS_ENDPOINT` | public URL of the peer API |
 | `WITNESS_PEERS` | comma-separated bootstrap peers |
+| `WITNESS_SEEDS=0` | don't join through the default seeds (a separate network, or a test) |
 | `WITNESS_BEHIND_PROXY=1` | trust `X-Forwarded-For` from your proxy |
+| `WITNESS_TRUSTED_PROXIES` | a CDN in front of your proxy: `cloudflare`, or comma-separated address ranges |
 | `WITNESS_ASN_DB=0` | skip the IP-to-ASN table (refreshed at start when older than a week) |
 
 The `/data` volume holds the key: back it up. Run CLI commands with

@@ -6,7 +6,10 @@
 #   WITNESS_RETAIN                 full | normalized | none (first start only)
 #   WITNESS_ENDPOINT               public URL of the peer API
 #   WITNESS_PEERS                  comma-separated bootstrap peer URLs
+#   WITNESS_SEEDS=0                don't join through the default seeds
 #   WITNESS_BEHIND_PROXY=1         trust X-Forwarded-For from your proxy
+#   WITNESS_TRUSTED_PROXIES        a CDN in front of that proxy: cloudflare,
+#                                  or comma-separated address ranges
 #   WITNESS_ASN_DB=0               don't download the IP-to-ASN table
 set -eu
 
@@ -22,11 +25,12 @@ if [ ! -f "$dir/witness.toml" ]; then
 fi
 
 [ -z "${WITNESS_ENDPOINT:-}" ] || cfg network.endpoint "$WITNESS_ENDPOINT"
-if [ -n "${WITNESS_PEERS:-}" ]; then
-    list=$(printf '%s' "$WITNESS_PEERS" | awk -F, '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i}')
-    cfg network.peers "[$list]"
-fi
+# a,b,c -> ["a", "b", "c"]
+toml_list() { printf '%s' "$1" | awk -F, '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i}'; }
+[ -z "${WITNESS_PEERS:-}" ] || cfg network.peers "[$(toml_list "$WITNESS_PEERS")]"
+[ "${WITNESS_SEEDS:-1}" != "0" ] || cfg network.seeds false
 [ "${WITNESS_BEHIND_PROXY:-0}" != "1" ] || cfg network.trust_forwarded_for true
+[ -z "${WITNESS_TRUSTED_PROXIES:-}" ] || cfg network.trusted_proxies "[$(toml_list "$WITNESS_TRUSTED_PROXIES")]"
 
 if [ "${WITNESS_ASN_DB:-1}" = "1" ]; then
     db="$dir/ip2asn-combined.tsv"
