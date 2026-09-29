@@ -20,6 +20,7 @@ use witness_core::statement::Signed;
 use witness_core::{Digest, SignedAttestation, now_ms};
 
 use crate::Node;
+use crate::config::NetworkConfig;
 use crate::federation::{GossipPage, IdList, PushRequest};
 
 pub fn router(node: Arc<Node>) -> Router {
@@ -109,13 +110,12 @@ async fn rate_limit(
     req: Request,
     next: Next,
 ) -> Response {
-    // Without the real client address (a reverse proxy this node doesn't
-    // trust, a LAN, proxies that didn't say), every client would share one
-    // bucket.
-    let known = node.proxies.client(addr.ip(), req.headers()).filter(|ip| {
-        node.config.network.trust_forwarded_for || witness_capture::netpolicy::is_public(*ip)
-    });
-    if known.is_none_or(|ip| limiter.allow(ip, Instant::now())) {
+    let ip = client_ip(&node.config.network, addr.ip(), req.headers());
+    // Without the real client address (a local reverse proxy, a LAN), every
+    // client would share one bucket.
+    let unknown =
+        !node.config.network.trust_forwarded_for && !witness_capture::netpolicy::is_public(ip);
+    if unknown || limiter.allow(ip, Instant::now()) {
         next.run(req).await
     } else {
         let mut r =
@@ -343,6 +343,36 @@ async fn gossip_pull(
     }))
 }
 
+/// Where a request came from. Behind a reverse proxy that is what the
+/// proxy says: the address it appended to X-Forwarded-For, or the header
+/// named by `network.client_ip_header`. But only if the connection came
+/// from the proxy: from anywhere else, say a published container port, the
+/// headers are whatever the client wrote, and observation receipts (where
+/// a peer connects from, which places it) must not be forgeable.
+fn client_ip(net: &NetworkConfig, addr: IpAddr, headers: &HeaderMap) -> IpAddr {
+    let addr = addr.to_canonical();
+    if !net.trust_forwarded_for || witness_capture::netpolicy::is_public(addr) {
+        return addr;
+    }
+    // Header lines are one list; a proxy may add a line of its own.
+    let last = |name: &str| {
+        headers
+            .get_all(name)
+            .iter()
+            .next_back()
+            .and_then(|v| v.to_str().ok())
+    };
+    let told = match &net.client_ip_header {
+        // Set by the proxy itself, e.g. Caddy's `header_up X-Real-IP
+        // {client_ip}`.
+        Some(name) => last(name),
+        // The proxy appends the address it saw; anything before it came
+        // from the client and can be forged.
+        None => last("x-forwarded-for").and_then(|v| v.rsplit(',').next()),
+    };
+    told.and_then(|v| v.trim().parse().ok()).unwrap_or(addr)
+}
+
 async fn gossip_push(
     State(node): State<Arc<Node>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -352,11 +382,9 @@ async fn gossip_push(
     if req.messages.len() > 1000 {
         return Err(bad("at most 1000 messages per push"));
     }
-    // Where the peer connects from places it, so this must not be
-    // forgeable (see `proxies`).
-    let from = node.proxies.client(addr.ip(), &headers);
+    let ip = client_ip(&node.config.network, addr.ip(), &headers);
     let node2 = node.clone();
-    let resp = tokio::task::spawn_blocking(move || node2.receive_push(req, from)).await??;
+    let resp = tokio::task::spawn_blocking(move || node2.receive_push(req, ip)).await??;
     Ok(Json(resp).into_response())
 }
 
@@ -389,5 +417,43 @@ mod tests {
         }
         assert!(!l.allow(v6b, t0));
         assert!(RateLimiter::new(0).allow(a, t0), "0 = no limit");
+    }
+
+    #[test]
+    fn client_addresses_come_from_the_proxy() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let headers = |pairs: &[(&'static str, &str)]| {
+            let mut h = HeaderMap::new();
+            for (k, v) in pairs {
+                h.append(*k, v.parse().unwrap());
+            }
+            h
+        };
+        let (client, other, edge, proxy) = ("81.2.69.160", "9.9.9.9", "172.70.4.1", "10.10.20.10");
+        let mut net = NetworkConfig::default();
+        let xff = headers(&[("x-forwarded-for", &format!("{other}, {client}"))]);
+        assert_eq!(client_ip(&net, ip(proxy), &xff), ip(proxy), "not trusted");
+        // IPv4 on an IPv6 socket, which would otherwise be one /64 bucket.
+        assert_eq!(client_ip(&net, ip("::ffff:81.2.69.160"), &xff), ip(client));
+        net.trust_forwarded_for = true;
+        assert_eq!(client_ip(&net, ip(proxy), &xff), ip(client));
+        assert_eq!(client_ip(&net, ip("::ffff:10.10.20.10"), &xff), ip(client));
+        // From anywhere but a proxy, headers are the client's own words.
+        assert_eq!(client_ip(&net, ip(other), &xff), ip(other));
+        // A proxy that adds a line of its own (HAProxy).
+        let lines = headers(&[("x-forwarded-for", other), ("x-forwarded-for", client)]);
+        assert_eq!(client_ip(&net, ip(proxy), &lines), ip(client));
+        assert_eq!(client_ip(&net, ip(proxy), &HeaderMap::new()), ip(proxy));
+        // Caddy trusting Cloudflare appends the edge it saw; its own
+        // header has the client it worked out.
+        let caddy = headers(&[
+            ("x-forwarded-for", &format!("{other}, {client}, {edge}")),
+            ("x-real-ip", client),
+        ]);
+        assert_eq!(client_ip(&net, ip(proxy), &caddy), ip(edge));
+        net.client_ip_header = Some("X-Real-IP".into());
+        assert_eq!(client_ip(&net, ip(proxy), &caddy), ip(client));
+        assert_eq!(client_ip(&net, ip(other), &caddy), ip(other));
+        assert_eq!(client_ip(&net, ip(proxy), &xff), ip(proxy), "no header");
     }
 }

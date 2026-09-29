@@ -1044,31 +1044,28 @@ fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
             cfg.quorum.min_observers
         ));
     }
-    // Behind a CDN the node isn't told about, every peer seems to connect
-    // from the CDN, and that is where the node places them.
-    if !node.proxies.cloudflare() {
-        let me = node.key.public();
-        let mut via = 0;
-        for p in &peers {
-            if let Some(o) = node.store.observation(&p.key, &me)? {
-                via += usize::from(witness_node::proxies::is_cloudflare(o.body.ip));
-            }
-        }
-        if via > 0 {
-            let trust = if cfg.network.trust_forwarded_for {
-                ""
-            } else {
-                " and network.trust_forwarded_for = true"
-            };
-            w.push(format!(
-                "{via} peer(s) seem to connect from Cloudflare's addresses; behind Cloudflare, \
-                 set network.trusted_proxies = [\"cloudflare\"]{trust} (docs/INSTALL.md)"
-            ));
+    // Behind a CDN, unless the proxy passes on the client's address, every
+    // peer seems to connect from the CDN, and that is where it is placed.
+    let now = now_ms();
+    let mut cloudflare = 0;
+    for p in &peers {
+        if node
+            .location_of(&p.key, now)?
+            .is_some_and(|l| l.direct && l.asn == 13335)
+        {
+            cloudflare += 1;
         }
     }
-    if !cfg.network.trusted_proxies.is_empty() && !cfg.network.trust_forwarded_for {
+    if cloudflare > 0 {
+        w.push(format!(
+            "{cloudflare} peer(s) seem to connect from Cloudflare (AS13335); behind Cloudflare, \
+             have your reverse proxy pass on the client's address (network.client_ip_header, \
+             docs/INSTALL.md)"
+        ));
+    }
+    if cfg.network.client_ip_header.is_some() && !cfg.network.trust_forwarded_for {
         w.push(
-            "network.trusted_proxies does nothing without network.trust_forwarded_for".to_string(),
+            "network.client_ip_header does nothing without network.trust_forwarded_for".to_string(),
         );
     }
     let failing = peers

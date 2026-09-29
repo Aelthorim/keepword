@@ -73,15 +73,18 @@ pub struct NetworkConfig {
     pub cosign_interval_secs: u64,
     /// Serve raw blobs to peers, for these hosts only (and their subdomains).
     pub serve_content_hosts: Vec<String>,
-    /// Take the client address from X-Forwarded-For, as written by your
-    /// reverse proxy (only behind a proxy you control). Only believed from
-    /// connections from this machine or a private network, where such a
-    /// proxy sits, and from `trusted_proxies`.
+    /// Take the client address from your reverse proxy: the last
+    /// X-Forwarded-For address, the one the proxy added, or
+    /// `client_ip_header` (only behind a proxy you control). Only believed
+    /// on connections from this machine or a private network, where such a
+    /// proxy sits.
     pub trust_forwarded_for: bool,
-    /// A CDN in front of your reverse proxy: "cloudflare", or its address
-    /// ranges (`151.101.0.0/16`). Without it, every peer seems to connect
-    /// from the CDN. Needs `trust_forwarded_for`.
-    pub trusted_proxies: Vec<String>,
+    /// A header your proxy sets to the client address it worked out, e.g.
+    /// `X-Real-IP` from Caddy's `header_up X-Real-IP {client_ip}`. Needed
+    /// behind a CDN: the address the proxy saw, and adds to
+    /// X-Forwarded-For, is the CDN's. The proxy must set the header itself,
+    /// replacing any the client sent.
+    pub client_ip_header: Option<String>,
     /// Let peers and network services (drand, calendars, Esplora) be on
     /// private addresses. Peer endpoints come from untrusted descriptors, so
     /// only enable this for a closed network on a LAN.
@@ -120,7 +123,7 @@ impl Default for NetworkConfig {
             cosign_interval_secs: 3600,
             serve_content_hosts: vec![],
             trust_forwarded_for: false,
-            trusted_proxies: vec![],
+            client_ip_header: None,
             allow_private_peers: false,
             decline_hosts: vec![],
             render_requests: false,
@@ -352,10 +355,11 @@ impl Config {
                 }
             }
         }
-        crate::proxies::Proxies::new(
-            self.network.trust_forwarded_for,
-            &self.network.trusted_proxies,
-        )?;
+        if let Some(h) = &self.network.client_ip_header {
+            if axum::http::HeaderName::from_bytes(h.as_bytes()).is_err() {
+                bail!("network.client_ip_header must be a header name like X-Real-IP, got {h:?}");
+            }
+        }
         Ok(())
     }
 

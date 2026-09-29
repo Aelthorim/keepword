@@ -124,12 +124,10 @@ The proxy must forward `/v1/` to `127.0.0.1:8481` and put the real client
 address in `X-Forwarded-For`. The installer turns on
 `network.trust_forwarded_for` when you pass `--domain`, because observation
 receipts, and with them every peer's corroborated location, depend on it.
-The node reads that header from the end: the last address is the one your
-proxy added, and addresses on this machine or a private network (more
-proxies of yours) are passed over until another one comes. It only reads
-the header on connections from this machine or a private network, so the
-proxy must run there: with the API exposed directly, clients could
-otherwise claim any address.
+The node uses the **last** address in that header, the one your proxy
+added. It only reads the header on connections from this machine or a
+private network, so the proxy must run there: with the API exposed
+directly, clients could otherwise claim any address.
 
 nginx:
 
@@ -150,29 +148,42 @@ server {
 
 ### Behind Cloudflare or another CDN
 
-Through a CDN, the address your proxy sees is the CDN's, and the node would
-place every peer in the CDN's network (`witness net status` warns when
-peers seem to connect from Cloudflare). Tell the node about the CDN:
+Through a CDN, the address your proxy sees, and adds to `X-Forwarded-For`,
+is the CDN's, and the node would place every peer in the CDN's network
+(`witness net status` warns when peers seem to connect from Cloudflare).
+Have the proxy work out the client's address, as for any site behind a
+CDN, and pass it on in a header it sets itself. Caddy:
+
+```caddy
+{
+    servers {
+        trusted_proxies cloudflare     # caddy-cloudflare-ip module; or: static <Cloudflare's ranges>
+        client_ip_headers CF-Connecting-IP
+    }
+}
+
+witness.example.org {
+    reverse_proxy 127.0.0.1:8481 {
+        header_up X-Real-IP {client_ip}
+    }
+}
+```
+
+With nginx, `set_real_ip_from` Cloudflare's ranges and `real_ip_header
+CF-Connecting-IP`, then `proxy_set_header X-Real-IP $remote_addr`. Then
+tell the node which header it is:
 
 ```sh
-witness config set network.trusted_proxies '["cloudflare"]'
+witness config set network.client_ip_header X-Real-IP
 sudo systemctl restart witness
 ```
 
-A request that reached your proxy from one of Cloudflare's addresses then
-counts as coming from the address in `CF-Connecting-IP`, which Cloudflare
-sets itself. Your proxy needs no change as long as it passes that header on,
-as Caddy and nginx do. A request that didn't come through Cloudflare, say
-straight to your server's address, still counts as coming from where it
-did, whatever headers it carries. Peers are programs, not browsers: keep
-Cloudflare from challenging requests to `/v1/` (Bot Fight Mode, "Under
-Attack" mode).
-
-For another CDN, list its address ranges instead, e.g.
-`'["151.101.0.0/16"]'`. The node then takes the address before the CDN's in
-`X-Forwarded-For`, so your proxy must keep what the CDN wrote there: Caddy
-with `trusted_proxies` in its global `servers` options, nginx with
-`$proxy_add_x_forwarded_for` instead of `$remote_addr`.
+The proxy must set that header on every request, replacing any the client
+sent (`header_up` and `proxy_set_header` do). Don't name a header the proxy
+only passes on, such as `CF-Connecting-IP`: anyone reaching your server
+around the CDN could write it. Peers are programs, not browsers: keep the
+CDN from challenging requests to `/v1/` (Cloudflare's Bot Fight Mode,
+"Under Attack" mode).
 
 ### Uninstalling
 
@@ -204,7 +215,7 @@ Or `docker compose -f packaging/docker/compose.yaml up -d`. Settings:
 | `WITNESS_PEERS` | comma-separated bootstrap peers |
 | `WITNESS_SEEDS=0` | don't join through the default seeds (a separate network, or a test) |
 | `WITNESS_BEHIND_PROXY=1` | trust `X-Forwarded-For` from your proxy |
-| `WITNESS_TRUSTED_PROXIES` | a CDN in front of your proxy: `cloudflare`, or comma-separated address ranges |
+| `WITNESS_CLIENT_IP_HEADER` | the header your proxy puts the client address in, e.g. `X-Real-IP` (behind a CDN) |
 | `WITNESS_ASN_DB=0` | skip the IP-to-ASN table (refreshed at start when older than a week) |
 
 The `/data` volume holds the key: back it up. Run CLI commands with

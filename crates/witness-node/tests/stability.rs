@@ -40,7 +40,7 @@ fn push(node: &Node, from: &Keypair, messages: Vec<Gossip>) -> usize {
     .unwrap();
     node.receive_push(
         PushRequest { envelope, messages },
-        Some("198.51.100.7".parse().unwrap()),
+        "198.51.100.7".parse().unwrap(),
     )
     .unwrap()
     .accepted
@@ -245,15 +245,15 @@ async fn dead_peers_dont_starve_gossip() {
 }
 
 /// Where a peer connects from places it in a network. Behind Cloudflare
-/// and a reverse proxy, connections come from the proxy, and the address
-/// the proxy saw is Cloudflare's: the node must sign for the peer's own
-/// address, and a client going around Cloudflare must not get to claim one.
+/// and a reverse proxy, connections come from the proxy, and the address it
+/// saw and adds to X-Forwarded-For is Cloudflare's: the node must take the
+/// client address the proxy worked out.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cdn_is_never_a_peers_location() {
+async fn peers_behind_a_cdn_are_placed_where_they_are() {
     // The test connects from 127.0.0.1, like a proxy on the same machine.
     let seed = spawn_with(64901, vec![], |c| {
         c.network.trust_forwarded_for = true;
-        c.network.trusted_proxies = vec!["cloudflare".into()];
+        c.network.client_ip_header = Some("X-Real-IP".into());
     })
     .await;
     let peer = Keypair::generate().unwrap();
@@ -285,45 +285,24 @@ async fn a_cdn_is_never_a_peers_location() {
         }
         let resp = req.send().await.unwrap().error_for_status().unwrap();
         let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
-        resp.observation.map(|o| o.body.ip)
+        resp.observation.unwrap().body.ip.to_string()
     };
-    let ip = |s: &str| Some(s.parse::<std::net::IpAddr>().unwrap());
-    let edge = "172.70.4.1";
-    // A proxy that doesn't trust Cloudflare writes only the edge's address.
-    assert_eq!(
-        push(&[
-            ("x-forwarded-for", edge),
-            ("cf-connecting-ip", "81.2.69.160")
-        ])
-        .await,
-        ip("81.2.69.160")
-    );
-    // One that does keeps whatever the client put before it.
-    let xff = format!("9.9.9.9, 81.2.69.161, {edge}");
-    assert_eq!(
-        push(&[
-            ("x-forwarded-for", &xff),
-            ("cf-connecting-ip", "81.2.69.161")
-        ])
-        .await,
-        ip("81.2.69.161")
-    );
-    // Around Cloudflare, straight to the proxy.
-    assert_eq!(
-        push(&[
-            ("x-forwarded-for", "81.2.69.162"),
-            ("cf-connecting-ip", "9.9.9.9")
-        ])
-        .await,
-        ip("81.2.69.162")
-    );
-    // Cloudflare's own address is nobody's location.
-    assert_eq!(push(&[("x-forwarded-for", edge)]).await, None);
+    // What Caddy sends with `trusted_proxies cloudflare`, `client_ip_headers
+    // CF-Connecting-IP` and `header_up X-Real-IP {client_ip}`.
+    let caddy = [
+        ("x-forwarded-for", "9.9.9.9, 81.2.69.160, 172.70.4.1"),
+        ("x-real-ip", "81.2.69.160"),
+        ("cf-connecting-ip", "81.2.69.160"),
+    ];
+    assert_eq!(push(&caddy).await, "81.2.69.160");
+    // Without the header, only the proxy's own address, which places
+    // nobody; never the CDN's.
+    assert_eq!(push(&caddy[..1]).await, "127.0.0.1");
     let stored = seed
         .node
         .store
         .observation(&peer.public(), &seed.node.key.public())
         .unwrap()
         .unwrap();
-    assert_eq!(Some(stored.body.ip), ip("81.2.69.162"));
+    assert_eq!(stored.body.ip.to_string(), "127.0.0.1");
 }

@@ -8,30 +8,30 @@ network protocol only change incompatibly in a new major version.
 
 ### Added
 
-- **`network.trusted_proxies`: witnesses behind Cloudflare or another
-  CDN.** With `["cloudflare"]`, a request that reached your reverse proxy
-  from one of Cloudflare's addresses counts as coming from the address in
-  `CF-Connecting-IP`, which Cloudflare sets itself; a request that went
-  around Cloudflare still counts as coming from where it did. For another
-  CDN, list its address ranges. Container: `WITNESS_TRUSTED_PROXIES`.
-- `witness net status` warns when peers seem to connect from Cloudflare's
-  addresses.
+- **`network.client_ip_header`: witnesses behind Cloudflare or another
+  CDN.** Behind a CDN, the address a witness's reverse proxy sees is the
+  CDN's. The proxy can work out the client's address and pass it on in a
+  header of its own, e.g. Caddy's `header_up X-Real-IP {client_ip}`; the
+  node now takes the address from that header. Container:
+  `WITNESS_CLIENT_IP_HEADER`.
+- `witness net status` warns when peers seem to connect from Cloudflare.
 - The installer's `--no-seeds` and the container's `WITNESS_SEEDS=0` keep a
   node off the public network, for separate networks and tests.
 
 ### Fixed
 
 - **Behind a CDN, every peer was placed in the CDN's network.** The node
-  took the address its proxy saw, which behind a CDN is the CDN's edge. It
-  signed that as every peer's location (AS13335 behind Cloudflare) and told
-  each peer it was there, and nothing warned about it.
+  took the address its proxy added to X-Forwarded-For, which behind a CDN
+  is the CDN's edge. It signed that as every peer's location (AS13335
+  behind Cloudflare), told each peer it was there, and nothing warned.
 - **CI runs joined the public network.** The installer and container tests
   started nodes with the default seeds, and each run left a few dead
   witnesses in the seed's peer table.
 - **Behind a proxy that adds its own X-Forwarded-For line**, such as
-  HAProxy, the node read the first line, which the client wrote. All lines
-  are now read in order, from the proxy's end, and chains of your own
-  proxies on private addresses are followed.
+  HAProxy, the node read the first line, which the client wrote. It now
+  reads the last.
+- With the API listening on `[::]`, which takes IPv4 connections too,
+  every IPv4 client shared one rate-limit bucket.
 
 ## [1.1.1] - 2026-09-28
 
