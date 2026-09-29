@@ -4,7 +4,13 @@ All notable changes to Witness. Versions follow [Semantic Versioning](https://se
 from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
 network protocol only change incompatibly in a new major version.
 
-## [Unreleased]
+## [1.2.0] - 2026-09-29
+
+Witnesses behind Cloudflare or another CDN, and CI kept off the public
+network. Nothing changes in the protocol or the stored data; 1.1.x and
+1.2.0 witnesses work together. A witness behind a CDN places every peer in
+the CDN's network until its proxy passes on client addresses: see
+`network.client_ip_header` below and docs/INSTALL.md.
 
 ### Added
 
@@ -254,6 +260,7 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[1.2.0]: https://github.com/Aelthorim/witness/releases/tag/v1.2.0
 [1.1.1]: https://github.com/Aelthorim/witness/releases/tag/v1.1.1
 [1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
 [1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
