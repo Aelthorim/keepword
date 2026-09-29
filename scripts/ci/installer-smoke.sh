@@ -2,15 +2,17 @@
 # Installer smoke test for a fresh distro container (no running init):
 # install, check the generated service files, run the node the way the
 # service would, query its API, then re-run the installer as an upgrade.
+# The node never dials the default seeds: it would join the real network.
 # Usage: installer-smoke.sh INIT   (systemd | openrc | none)
 set -eu
 init=$1
 src=$(cd "$(dirname "$0")/../.." && pwd)
 
 sh "$src/scripts/install.sh" --source "$src" --yes --init "$init" \
-    --no-detect --no-asn-db --asn 64500 --country DE --peer https://peer.example.invalid
+    --no-detect --no-asn-db --asn 64500 --country DE --peer https://peer.example.invalid --no-seeds
 
 witness --version
+test "$(witness config get network.seeds)" = false
 case "$init" in
     systemd) systemd-analyze verify /etc/systemd/system/witness.service \
         /etc/systemd/system/witness-asn-update.service /etc/systemd/system/witness-asn-update.timer ;;
@@ -43,6 +45,7 @@ before=$(key)
 sh "$src/scripts/install.sh" --source "$src" --yes --init "$init" --no-detect --no-asn-db --retain normalized
 test "$before" = "$(key)"
 test "$(witness config get content.retain)" = normalized
+test "$(witness config get network.seeds)" = false
 
 sh "$src/scripts/install.sh" --uninstall --purge --yes --init "$init"
 if id witness >/dev/null 2>&1; then echo "the witness user still exists" >&2; exit 1; fi

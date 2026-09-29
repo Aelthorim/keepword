@@ -429,8 +429,9 @@ number of keys that never connect to the verifier in any networks they
 like, each one counted. So a verifier decides where K is like this:
 
 1. **Another witness is where the verifier saw it connect.** If K has
-   pushed to the verifier, the address the verifier saw is K's location.
-   Receipts from other observers never place K.
+   pushed to the verifier, the address the verifier saw is K's location
+   (behind the verifier's own reverse proxy or CDN, the address they pass
+   on). Receipts from other observers never place K.
 2. **The verifier itself is where its peers saw it.** Receipts about the
    verifier count once per network their observers connect from, as the
    verifier saw those observers itself, and `min_observers` (2) networks

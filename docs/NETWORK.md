@@ -145,8 +145,10 @@ sudo sh scripts/install.sh --domain their.domain --caddy
 node knows enough peers, and never on a network with
 `network.allow_private_peers`, so a LAN test cluster can't wander into the
 public network. To run a **separate** network, set
-`witness config set network.seeds false` on every witness and bootstrap it
-with `--peer`.
+`witness config set network.seeds false` on every witness (the installer's
+`--no-seeds`, the container's `WITNESS_SEEDS=0`) and bootstrap it with
+`--peer`. Do the same for test installs and CI, or they join the public
+network and linger in its peer tables.
 
 There is no registration and no central server. A new witness counts in
 verdicts once two others have observed it, and is assigned requests from
@@ -195,6 +197,7 @@ and `witness net status` warns about them: `quorum.trust_self_reported`,
 | `network.serve_content_hosts` | Hosts whose captured content your API serves to anyone. Empty by default: peers get hashes and signatures, never page content. |
 | `content.retain` | `full`, `normalized` or `none`. See DESIGN.md §7 before storing third-party content. |
 | `quorum.max_rechecks_per_hour` | Most recheck captures your witness makes for the network in an hour (default 30). |
+| `network.client_ip_header` | Behind a CDN: the header your reverse proxy puts the client address in, e.g. `X-Real-IP`. Without it, the node places every peer in the CDN's network (INSTALL.md). |
 | `network.api_requests_per_minute` | Requests per minute the public API answers from one address, in bursts of as many (default 600, 0 = off). Behind a reverse proxy it needs `network.trust_forwarded_for` to see real addresses; without it, private and local addresses aren't limited. |
 
 Change settings with `witness config set KEY VALUE`, then
@@ -261,7 +264,7 @@ restart it.
 | A peer shows `error: ... not a public address` | Its endpoint is a private IP. Public witnesses need public endpoints. |
 | `location not corroborated` | Fewer than 2 other witnesses have received pushes from this one yet. Wait a few rounds, and check that its peers can reach it. |
 | Every location is `unknown` | No IP-to-ASN table: `witness config get quorum.asn_db`, and check the `witness-asn-update` timer. |
-| Peers all show the same ASN | They're at the same provider, or observations come from a proxy or CDN in front of the API. The API must be reached directly or through your own reverse proxy (INSTALL.md). |
+| Peers all show the same ASN | They're at the same provider, or a proxy or CDN in front of the API hides their addresses. AS13335 is Cloudflare: have the proxy pass on the client address (`network.client_ip_header`, INSTALL.md). Otherwise the proxy must pass real addresses (`trust_forwarded_for`). |
 | `no seed: no drand beacon` | Nobody can reach drand yet. Assignment waits for the day's beacon. |
 | Verdicts stay `INSUFFICIENT` | Fewer than 3 ASNs among the witnesses assigned to the URL, or their captures fall outside one 10-minute window. |
 | A verdict says `DISPUTED` | The assigned witnesses saw different versions. While rechecks run (up to half an hour) it says so; if it stays disputed, too few spare witnesses in those countries could recheck, or the page differs on every fetch (add a site rule for the changing part). |

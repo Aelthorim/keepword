@@ -14,7 +14,7 @@ use witness_core::statement::Signed;
 use witness_core::{Keypair, now_ms};
 use witness_node::Node;
 use witness_node::config::Config;
-use witness_node::federation::PushRequest;
+use witness_node::federation::{PushRequest, PushResponse};
 
 fn new_node() -> (tempfile::TempDir, Node) {
     let dir = tempfile::tempdir().unwrap();
@@ -175,6 +175,10 @@ struct TestNode {
 }
 
 async fn spawn(asn: u32, peers: Vec<String>) -> TestNode {
+    spawn_with(asn, peers, |_| {}).await
+}
+
+async fn spawn_with(asn: u32, peers: Vec<String>, tweak: impl FnOnce(&mut Config)) -> TestNode {
     let dir = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -189,6 +193,7 @@ async fn spawn(asn: u32, peers: Vec<String>) -> TestNode {
     cfg.beacon.allow_insecure_seed = true;
     cfg.quorum.trust_self_reported = true;
     cfg.anchor.calendars = vec![];
+    tweak(&mut cfg);
     Node::init(dir.path(), &cfg).unwrap();
     let node = Arc::new(Node::open(dir.path()).unwrap());
     let app = witness_node::api::router(node.clone());
@@ -237,4 +242,67 @@ async fn dead_peers_dont_starve_gossip() {
             "a live peer was left out of the round"
         );
     }
+}
+
+/// Where a peer connects from places it in a network. Behind Cloudflare
+/// and a reverse proxy, connections come from the proxy, and the address it
+/// saw and adds to X-Forwarded-For is Cloudflare's: the node must take the
+/// client address the proxy worked out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peers_behind_a_cdn_are_placed_where_they_are() {
+    // The test connects from 127.0.0.1, like a proxy on the same machine.
+    let seed = spawn_with(64901, vec![], |c| {
+        c.network.trust_forwarded_for = true;
+        c.network.client_ip_header = Some("X-Real-IP".into());
+    })
+    .await;
+    let peer = Keypair::generate().unwrap();
+    let http = reqwest::Client::new();
+    let mut sent = 0;
+    let mut push = async |headers: &[(&str, &str)]| {
+        sent += 1;
+        let envelope = Signed::sign(
+            PushEnvelope {
+                from: peer.public(),
+                to: seed.node.key.public(),
+                sent_at_ms: now_ms() + sent,
+                payload: witness_core::net::payload_digest(&[]),
+            },
+            &peer,
+        )
+        .unwrap();
+        let body = serde_json::to_vec(&PushRequest {
+            envelope,
+            messages: vec![],
+        })
+        .unwrap();
+        let mut req = http
+            .post(format!("{}/v1/gossip", seed.endpoint))
+            .header("content-type", "application/json")
+            .body(body);
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let resp = req.send().await.unwrap().error_for_status().unwrap();
+        let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
+        resp.observation.unwrap().body.ip.to_string()
+    };
+    // What Caddy sends with `trusted_proxies cloudflare`, `client_ip_headers
+    // CF-Connecting-IP` and `header_up X-Real-IP {client_ip}`.
+    let caddy = [
+        ("x-forwarded-for", "9.9.9.9, 81.2.69.160, 172.70.4.1"),
+        ("x-real-ip", "81.2.69.160"),
+        ("cf-connecting-ip", "81.2.69.160"),
+    ];
+    assert_eq!(push(&caddy).await, "81.2.69.160");
+    // Without the header, only the proxy's own address, which places
+    // nobody; never the CDN's.
+    assert_eq!(push(&caddy[..1]).await, "127.0.0.1");
+    let stored = seed
+        .node
+        .store
+        .observation(&peer.public(), &seed.node.key.public())
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.body.ip.to_string(), "127.0.0.1");
 }

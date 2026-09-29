@@ -3030,7 +3030,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "witness-capture"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "chromiumoxide",
  "futures",
@@ -3049,7 +3049,7 @@ dependencies = [
 
 [[package]]
 name = "witness-core"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -3069,7 +3069,7 @@ dependencies = [
 
 [[package]]
 name = "witness-node"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "witness-normalize"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "ego-tree",
  "encoding_rs",
@@ -3112,7 +3112,7 @@ dependencies = [
 
 [[package]]
 name = "witness-store"
-version = "1.1.1"
+version = "1.2.0"
 dependencies = [
  "rusqlite",
  "serde",

@@ -12,15 +12,17 @@ jobs:
       - uses: actions/checkout@v4
       - run: shellcheck -s sh scripts/install.sh scripts/ci/installer-smoke.sh packaging/docker/entrypoint.sh
 
-  # A real systemd host: install, run, upgrade, purge.
+  # A real systemd host: install, run, upgrade, purge. Nodes started in CI
+  # never dial the default seeds: they would join the real network.
   systemd:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install
-        run: sudo sh scripts/install.sh --source . --yes --asn 64500 --country DE --peer https://peer.example.invalid
+        run: sudo sh scripts/install.sh --source . --yes --asn 64500 --country DE --peer https://peer.example.invalid --no-seeds
       - name: Service is up
         run: |
+          test "$(sudo witness config get network.seeds)" = false
           systemctl is-active witness
           curl -fsS http://127.0.0.1:8481/v1/descriptor
           sudo witness net status               # no alias: it becomes the witness user
@@ -35,6 +37,7 @@ jobs:
           before=$(key)
           sudo sh scripts/install.sh --source . --yes --retain normalized
           test "$before" = "$(key)"
+          test "$(sudo witness config get network.seeds)" = false
           systemctl is-active witness
       - name: Uninstall
         run: |
@@ -79,10 +82,12 @@ jobs:
             -e WITNESS_ASN=64500 -e WITNESS_COUNTRY=DE \
             -e WITNESS_ENDPOINT=https://witness.example.invalid \
             -e WITNESS_PEERS=https://a.example.invalid,https://b.example.invalid \
+            -e WITNESS_SEEDS=0 \
             witness
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8481/v1/descriptor && break; sleep 2; done
           curl -fsS http://127.0.0.1:8481/v1/descriptor | grep -q witness.example.invalid
           test "$(docker exec witness-ci witness config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
+          test "$(docker exec witness-ci witness config get network.seeds)" = false
           docker exec witness-ci witness id
       - if: failure()
         run: docker logs witness-ci

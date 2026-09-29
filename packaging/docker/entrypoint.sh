@@ -6,7 +6,10 @@
 #   WITNESS_RETAIN                 full | normalized | none (first start only)
 #   WITNESS_ENDPOINT               public URL of the peer API
 #   WITNESS_PEERS                  comma-separated bootstrap peer URLs
+#   WITNESS_SEEDS=0                don't join through the default seeds
 #   WITNESS_BEHIND_PROXY=1         trust X-Forwarded-For from your proxy
+#   WITNESS_CLIENT_IP_HEADER       the header your proxy puts the client
+#                                  address in, e.g. X-Real-IP (behind a CDN)
 #   WITNESS_ASN_DB=0               don't download the IP-to-ASN table
 set -eu
 
@@ -26,7 +29,9 @@ if [ -n "${WITNESS_PEERS:-}" ]; then
     list=$(printf '%s' "$WITNESS_PEERS" | awk -F, '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? ", " : ""), $i}')
     cfg network.peers "[$list]"
 fi
+[ "${WITNESS_SEEDS:-1}" != "0" ] || cfg network.seeds false
 [ "${WITNESS_BEHIND_PROXY:-0}" != "1" ] || cfg network.trust_forwarded_for true
+[ -z "${WITNESS_CLIENT_IP_HEADER:-}" ] || cfg network.client_ip_header "$WITNESS_CLIENT_IP_HEADER"
 
 if [ "${WITNESS_ASN_DB:-1}" = "1" ]; then
     db="$dir/ip2asn-combined.tsv"

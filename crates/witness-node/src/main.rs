@@ -1044,6 +1044,30 @@ fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
             cfg.quorum.min_observers
         ));
     }
+    // Behind a CDN, unless the proxy passes on the client's address, every
+    // peer seems to connect from the CDN, and that is where it is placed.
+    let now = now_ms();
+    let mut cloudflare = 0;
+    for p in &peers {
+        if node
+            .location_of(&p.key, now)?
+            .is_some_and(|l| l.direct && l.asn == 13335)
+        {
+            cloudflare += 1;
+        }
+    }
+    if cloudflare > 0 {
+        w.push(format!(
+            "{cloudflare} peer(s) seem to connect from Cloudflare (AS13335); behind Cloudflare, \
+             have your reverse proxy pass on the client's address (network.client_ip_header, \
+             docs/INSTALL.md)"
+        ));
+    }
+    if cfg.network.client_ip_header.is_some() && !cfg.network.trust_forwarded_for {
+        w.push(
+            "network.client_ip_header does nothing without network.trust_forwarded_for".to_string(),
+        );
+    }
     let failing = peers
         .iter()
         .filter(|p| p.endpoint.is_some() && p.last_error.is_some())
