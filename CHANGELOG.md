@@ -22,7 +22,7 @@ bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
 - **The command is `keepword`** (and `keepword-tlsn` for the TLSNotary
   tier), and the crates are `keepword-core`, `keepword-normalize`,
   `keepword-capture`, `keepword-store`, `keepword-node` and
-  `keepword-tlsn`. The repository is github.com/Aelthorim/keepword.
+  `keepword-tlsn`. The repository is github.com/keepword-net/keepword.
 - **Names on a node:** the data directory is `/var/lib/keepword` (or
   `./keepword-data` for a development node, or `KEEPWORD_DIR`), the config
   file `keepword.toml`, the service user `keepword`, the services
@@ -44,7 +44,7 @@ bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
   change too, and a WARC export's attestation record is
   `application/vnd.keepword.attestation+json`.
 - The default User-Agent is `Mozilla/5.0 (compatible; Keepword/2.0.0;
-  +https://github.com/aelthorim/keepword)`, and peers see `keepword/2.0.0`.
+  +https://github.com/keepword-net/keepword)`, and peers see `keepword/2.0.0`.
 - Release archives are `keepword-vX.Y.Z-TARGET.tar.gz`. The web UI, the
   banner and the social preview say Keepword.
 
@@ -311,9 +311,9 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
-[2.0.0]: https://github.com/Aelthorim/keepword/releases/tag/v2.0.0
-[1.2.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.2.0
-[1.1.1]: https://github.com/Aelthorim/keepword/releases/tag/v1.1.1
-[1.1.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.1.0
-[1.0.1]: https://github.com/Aelthorim/keepword/releases/tag/v1.0.1
-[1.0.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.0.0
+[2.0.0]: https://github.com/keepword-net/keepword/releases/tag/v2.0.0
+[1.2.0]: https://github.com/keepword-net/keepword/releases/tag/v1.2.0
+[1.1.1]: https://github.com/keepword-net/keepword/releases/tag/v1.1.1
+[1.1.0]: https://github.com/keepword-net/keepword/releases/tag/v1.1.0
+[1.0.1]: https://github.com/keepword-net/keepword/releases/tag/v1.0.1
+[1.0.0]: https://github.com/keepword-net/keepword/releases/tag/v1.0.0

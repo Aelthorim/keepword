@@ -16,7 +16,7 @@ edition = "2024"
 rust-version = "1.85"
 publish = false
 license = "AGPL-3.0-only"
-repository = "https://github.com/aelthorim/keepword"
+repository = "https://github.com/keepword-net/keepword"
 
 [workspace.dependencies]
 keepword-core = { path = "crates/keepword-core" }
