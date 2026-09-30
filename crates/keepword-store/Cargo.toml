@@ -4,8 +4,8 @@ description = "Content-addressed blob store, attestation index and the node's ap
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 keepword-core.workspace = true

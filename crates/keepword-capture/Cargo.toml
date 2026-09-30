@@ -4,8 +4,8 @@ description = "Fetching pages as evidence: raw HTTP with TLS details, optional h
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [features]
 default = []
