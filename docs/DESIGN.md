@@ -1,6 +1,6 @@
-# Witness: design
+# Keepword: design
 
-Witness produces independent, verifiable records of what a web page served,
+Keepword produces independent, verifiable records of what a web page served,
 and when. A node fetches a URL, reduces it to its meaningful content, signs a
 statement about both, and commits that statement to an append-only log. Anyone
 holding an evidence bundle can check the claim without trusting the node's
@@ -46,7 +46,7 @@ The original plan was sound. These are the places I changed it, and why.
 
 3. **Signatures are over a canonical binary encoding, not JSON.** JSON has
    no canonical form, so two implementations would disagree on the signed
-   bytes. The encoding (`witness-core/src/encoding.rs`) is ~60 lines,
+   bytes. The encoding (`keepword-core/src/encoding.rs`) is ~60 lines,
    domain-separated, and easy to reimplement.
 
 4. **Log leaves are attestation IDs, not attestations.** The log commits to
@@ -93,7 +93,7 @@ The original plan was sound. These are the places I changed it, and why.
     signed notes. The tree follows RFC 9162 exactly, so adding a C2SP view
     means changing the hash label and serving format, not the tree.
 
-11. **The default User-Agent is honest.** It identifies Witness. Cloaking
+11. **The default User-Agent is honest.** It identifies Keepword. Cloaking
     detection mostly comes from rendered captures (a real browser) and from
     comparing witnesses, not from disguise. Operators can override the UA
     per node. §9 discusses the trade-off.
@@ -108,7 +108,7 @@ The original plan was sound. These are the places I changed it, and why.
 ### 3.1 Canonical URL and URL key
 
 `canonical_url`: WHATWG parse; http/https only; no credentials; fragment and
-empty query removed. `url_key = BLAKE3-derive-key("witness url-key v1", len‖url)`.
+empty query removed. `url_key = BLAKE3-derive-key("keepword url-key v1", len‖url)`.
 
 ### 3.2 Attestation (v1, v2)
 
@@ -128,13 +128,13 @@ empty query removed. `url_key = BLAKE3-derive-key("witness url-key v1", len‖ur
 | `witness` | Ed25519 public key |
 | `beacon` | v2 only: drand quicknet round and BLS signature fetched just before the capture |
 
-Signing bytes: `str("witness/attestation/v1")` (or `v2` when a beacon is
+Signing bytes: `str("keepword/attestation/v1")` (or `v2` when a beacon is
 present) followed by the fields in the order above, with the beacon's
 `u64 round ‖ bytes signature` last. Integers are big-endian, variable data is prefixed with a `u32`
 length, optionals have a `0/1` tag, and IPs are `4|6` plus octets. The
 signature is Ed25519 with strict verification, so it can't be malleated into
 a second valid signature for the same statement.
-`id = BLAKE3-derive-key("witness attestation-id v1", len‖signing_bytes ‖ len‖signature)`.
+`id = BLAKE3-derive-key("keepword attestation-id v1", len‖signing_bytes ‖ len‖signature)`.
 
 ### 3.3 Log
 
@@ -144,11 +144,11 @@ algorithms and are tested exhaustively for every size up to 40. A running
 node keeps the hash of every complete subtree (`merkle::MerkleCache`, about
 two hashes per leaf), so appends and proofs cost O(log n), not a pass over
 the whole log. Each append produces a signed tree head:
-`str("witness/tree-head/v1") ‖ log_key ‖ u64 size ‖ root ‖ i64 timestamp_ms`.
+`str("keepword/tree-head/v1") ‖ log_key ‖ u64 size ‖ root ‖ i64 timestamp_ms`.
 Two valid heads with the same size and different roots are a portable proof
 of equivocation (`SignedTreeHead::is_equivocation_with`).
 
-### 3.4 Evidence bundle (`witness-bundle/1`)
+### 3.4 Evidence bundle (`keepword-bundle/1`)
 
 JSON carrying the signed attestation, an inclusion proof against a signed
 tree head, and optionally the header bytes, body bytes, normalized text and
@@ -169,7 +169,7 @@ the site rules behind the profile. Verification checks, independently:
    same profile. Otherwise it is skipped with the reason stated.
 
 Any piece can be withheld (after an erasure, say) without affecting the
-other checks. `witness verify --bundle FILE` needs no node, key or network.
+other checks. `keepword verify --bundle FILE` needs no node, key or network.
 
 ## 4. Normalization (v2, implemented)
 
@@ -177,7 +177,7 @@ The output is line-oriented text, one block per line, which makes it
 diffable, readable and cheap to hash:
 
 ```
-witness-norm/2 html
+keepword-norm/2 html
 title: Minister resigns
 modified: 2024-05-01T10:00:00Z
 h1: Minister resigns
@@ -218,7 +218,7 @@ The rules:
   cleaned. **Everything else** is opaque: the normalized form is the body
   hash.
 
-Site rules (`[[rules]]` in `witness.toml`) add `remove` selectors and a
+Site rules (`[[rules]]` in `keepword.toml`) add `remove` selectors and a
 `root` for a host and its subdomains. The most specific match wins. Rules
 are part of the profile.
 
@@ -234,7 +234,7 @@ but never labelled silent.
 
 ### Regression corpus
 
-`crates/witness-normalize/tests/corpus/` holds pages modelled on common
+`crates/keepword-normalize/tests/corpus/` holds pages modelled on common
 publishing stacks: a German public broadcaster's article, WordPress with
 Jetpack and Cloudflare email obfuscation, a SaaS privacy policy behind
 OneTrust, GOV.UK, and a JS-rendered status page. Each has variants that
@@ -256,17 +256,17 @@ captures is the most valuable next step.
 ## 5. Node (implemented)
 
 ```
-witness-core        pure protocol: encoding, attestations, Merkle, tree heads,
+keepword-core       pure protocol: encoding, attestations, Merkle, tree heads,
                     bundles, signed statements and gossip messages, drand
                     beacons, OpenTimestamps, assignment, quorum (no I/O)
-witness-normalize   canonicalizer, site rules, diff + silent-edit classifier
-witness-capture     HTTP capture (cert, IP, redirects, SSRF guard),
+keepword-normalize  canonicalizer, site rules, diff + silent-edit classifier
+keepword-capture    HTTP capture (cert, IP, redirects, SSRF guard),
                     headless render (feature "render"), WARC export
-witness-store       BLAKE3 blob store, SQLite index, log + tree heads,
+keepword-store      BLAKE3 blob store, SQLite index, log + tree heads,
                     watchlist, change table, purge; peers, audited heads,
                     gossip outbox, requests, cosignatures, observations,
                     alerts, beacons, anchors, reputation
-witness-node        `witness` CLI, peer API, federation, verdicts,
+keepword-node       `keepword` CLI, peer API, federation, verdicts,
                     anchoring, watch scheduler, web UI
 ```
 
@@ -277,7 +277,7 @@ attestation, append its ID to the log and sign the new tree head → compare
 with the previous capture of the same URL and method → record a change, and
 raise a silent-edit alert if the publisher didn't disclose it.
 
-`witness log audit` re-verifies everything: every tree head's signature,
+`keepword log audit` re-verifies everything: every tree head's signature,
 root and consistency with the next; every attestation's signature, ID and
 leaf position; and every retained blob's hash.
 
@@ -305,7 +305,7 @@ uses plain HTTPS between nodes instead:
   as a second transport. All messages are transport-agnostic signed
   statements.
 
-The API (`/v1`, see `crates/witness-node/src/api.rs`) serves the node's
+The API (`/v1`, see `crates/keepword-node/src/api.rs`) serves the node's
 descriptor, known peers, tree head, leaf IDs, attestations, inclusion and
 consistency proofs, bundles, and its gossip outbox, and accepts pushes. It
 never serves page content, except blobs for hosts on
@@ -335,7 +335,7 @@ minute) a node:
 4. prunes old data, at most hourly (§7).
 
 **Audits.** Each log has `network.audit_logs` (16) auditors: the witnesses
-ranked highest for it by `H("witness audit v1" ‖ log ‖ witness)`. Every
+ranked highest for it by `H("keepword audit v1" ‖ log ‖ witness)`. Every
 node computes the same set, so each log gets 16 auditors and each witness
 audits about 16 logs, whatever the network's size. Once per
 `network.cosign_interval_secs` (an hour), an auditor:
@@ -465,7 +465,7 @@ fixes that, TLSNotary included. What diversity really buys is
 
 ### 6.4 Watch requests and assignment
 
-`witness request URL` creates a signed request (interval ≥ 10 min, at most
+`keepword request URL` creates a signed request (interval ≥ 10 min, at most
 30 days, at most 50 active per requester). It floods, and every node
 computes the same rendezvous assignment:
 `weight = H(epoch_seed ‖ url_key ‖ node_key)`, highest first, at most one
@@ -480,7 +480,7 @@ epoch's beacon nobody can tell who was assigned in it, so a verdict counts
 no attestation from that epoch rather than every one.
 
 A requester can withdraw a request with a signed **cancellation**
-(`witness request URL --cancel`). Nodes drop the request and remember the
+(`keepword request URL --cancel`). Nodes drop the request and remember the
 cancellation until the request would have expired, so a peer re-sending it
 can't revive it. Asking again for a URL you already requested replaces
 your earlier request, which is how the interval changes. Captures already
@@ -504,7 +504,7 @@ Attestations aren't copied around the network. A node that needs a verdict
 on a URL asks the witnesses assigned to it (this epoch and the last) for
 their recent attestations of it (`GET /v1/attestations?url=`). Nodes do
 this every quorum window for the URLs they capture for the network and the
-ones they requested, and `witness verdict` and the web UI do it on demand.
+ones they requested, and `keepword verdict` and the web UI do it on demand.
 
 For a URL, a node gathers its own and fetched attestations, drops any
 dated in the future or before their own drand beacon, and takes the latest
@@ -584,7 +584,7 @@ assigned witnesses are all one operator's agrees on whatever they say.
 
 Reputation decays with a 14-day half-life, so it takes sustained agreement
 to build. **Silent-edit alerts** are raised by the capturing witness. Reputation is **informational only**: it
-is shown in `witness net peers` and the web UI, but assignment and verdicts
+is shown in `keepword net peers` and the web UI, but assignment and verdicts
 don't use it. Each node computes its own, so using it in assignment would
 break the agreement on who is assigned, and a lone honest witness that sees
 a localized page would be penalized.
@@ -596,16 +596,16 @@ round the witness had before fetching. Its BLS signature verifies offline,
 proving the capture happened *after* that round. Attestations without a
 beacon keep the exact v1 bytes.
 
-For the upper bound, `witness anchor submit` (or `serve --anchor`) sends
+For the upper bound, `keepword anchor submit` (or `serve --anchor`) sends
 `SHA-256(tree-head signing bytes)` to OpenTimestamps calendars. `anchor
 upgrade` fetches the Bitcoin path once it confirms and checks the block's
 Merkle root with an Esplora API. The stored proof is an ordinary detached
-`.ots` file (`witness anchor export`), so the standard `ots verify` tool
+`.ots` file (`keepword anchor export`), so the standard `ots verify` tool
 also works. Bundles include the smallest confirmed anchored head covering
-the attestation. `witness verify --bundle F --esplora URL` checks it
+the attestation. `keepword verify --bundle F --esplora URL` checks it
 against the chain.
 
-### 6.7 Proof tier: TLSNotary (implemented, `crates/witness-tlsn`)
+### 6.7 Proof tier: TLSNotary (implemented, `crates/keepword-tlsn`)
 
 A plain attestation means "trust the witness". For high-value captures a
 second witness, ideally an assigned one in another ASN, acts as the
@@ -623,7 +623,7 @@ second witness, ideally an assigned one in another ASN, acts as the
    BLAKE3 of the sent and received plaintext, time. It keeps the receipt for
    the prover to collect and floods it over gossip.
 4. The prover builds the attestation from the same transcript. Header block
-   and body come from the raw response via `witness_core::httpmsg`, so the
+   and body come from the raw response via `keepword_core::httpmsg`, so the
    derivation is identical on both sides. It stores the receipt, and with
    full retention the transcript.
 
@@ -640,13 +640,13 @@ only, no compression, no redirects. The crate is a **separate Cargo
 workspace** pinned to a tlsn git revision: tlsn is pre-1.0, changes its API
 often, needs Rust 1.95+ and pulls a large MPC stack from git. The main
 workspace never builds it; the receipt format and its verification live in
-`witness-core` and have no tlsn dependency.
+`keepword-core` and have no tlsn dependency.
 
 ```sh
-witness-tlsn serve --addr 0.0.0.0:8482                   # on the notary witness
-witness-tlsn capture https://example.org/terms \
+keepword-tlsn serve --addr 0.0.0.0:8482                  # on the notary witness
+keepword-tlsn capture https://example.org/terms \
     --verifier notary.example.net:8482 --verifier-key <hex>  # on the prover
-witness verify https://example.org/terms                 # includes "tls notary"
+keepword verify https://example.org/terms                # includes "tls notary"
 ```
 
 ### 6.8 Bundles, cosigned
@@ -666,7 +666,7 @@ before public operation. The design aims to leave room for compliance.
   text), `normalized` (headers + normalized text; diffs still work), or
   `none` (hashes only; edits detected but not shown). Hashes, attestations
   and the log never contain page content.
-- **Erasure (implemented):** `witness purge URL` deletes a URL's blobs
+- **Erasure (implemented):** `keepword purge URL` deletes a URL's blobs
   unless another URL still references the same bytes. `--forget` also
   deletes its attestation rows. The log keeps only opaque IDs, so every
   other proof stays valid. The test suite checks exactly this.

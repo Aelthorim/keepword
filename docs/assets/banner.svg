@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-labelledby="t d">
-  <title id="t">Witness</title>
+  <title id="t">Keepword</title>
   <desc id="d">A privacy policy quietly changes from "We never sell your data" to "We may share your data with partners". Three independent witnesses have sealed what the page said.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -80,7 +80,7 @@
 
   <!-- words -->
   <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
-    <text x="72" y="150" font-size="84" font-weight="800" fill="#ffffff" letter-spacing="-2">Witness</text>
+    <text x="72" y="150" font-size="84" font-weight="800" fill="#ffffff" letter-spacing="-2">Keepword</text>
     <text x="74" y="212" font-size="30" font-weight="600" fill="#e8e5ff">Web pages change quietly.</text>
     <text x="74" y="252" font-size="30" font-weight="600" fill="#ffcf5c">Now there's proof of what they said.</text>
     <text x="74" y="310" font-size="18" fill="#b9b6d9">Independent witnesses around the world record web pages,</text>

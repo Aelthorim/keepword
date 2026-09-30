@@ -20,7 +20,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features
       - run: cargo test --workspace
-      - run: cargo build --workspace --features witness-node/render
+      - run: cargo build --workspace --features keepword-node/render
 
   # The TLSNotary tier is its own workspace (large git dependencies, Rust
   # 1.95+). Release mode: MPC-TLS is slow unoptimized.
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: crates/witness-tlsn
+        working-directory: crates/keepword-tlsn
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -36,7 +36,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates/witness-tlsn
+          workspaces: crates/keepword-tlsn
       - run: cargo fmt --check
       - run: cargo clippy --release --all-targets
       - run: cargo test --release

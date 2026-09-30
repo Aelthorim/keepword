@@ -22,28 +22,28 @@ jobs:
         run: sudo sh scripts/install.sh --source . --yes --asn 64500 --country DE --peer https://peer.example.invalid --no-seeds
       - name: Service is up
         run: |
-          test "$(sudo witness config get network.seeds)" = false
-          systemctl is-active witness
+          test "$(sudo keepword config get network.seeds)" = false
+          systemctl is-active keepword
           curl -fsS http://127.0.0.1:8481/v1/descriptor
-          sudo witness net status               # no alias: it becomes the witness user
-          sudo witness watch add https://example.org/ --every 6h
-          test "$(sudo stat -c %U /var/lib/witness/index.sqlite)" = witness
-          sudo test -s /var/lib/witness/ip2asn-combined.tsv   # data dir is 0750
-          systemctl is-enabled witness-asn-update.timer
-          systemd-analyze security witness.service --no-pager | tail -n 1
+          sudo keepword net status               # no alias: it becomes the keepword user
+          sudo keepword watch add https://example.org/ --every 6h
+          test "$(sudo stat -c %U /var/lib/keepword/index.sqlite)" = keepword
+          sudo test -s /var/lib/keepword/ip2asn-combined.tsv   # data dir is 0750
+          systemctl is-enabled keepword-asn-update.timer
+          systemd-analyze security keepword.service --no-pager | tail -n 1
       - name: Upgrade keeps the key
         run: |
-          key() { sudo witness id | awk '/witness key/ {print $3}'; }
+          key() { sudo keepword id | awk '/witness key/ {print $3}'; }
           before=$(key)
           sudo sh scripts/install.sh --source . --yes --retain normalized
           test "$before" = "$(key)"
-          test "$(sudo witness config get network.seeds)" = false
-          systemctl is-active witness
+          test "$(sudo keepword config get network.seeds)" = false
+          systemctl is-active keepword
       - name: Uninstall
         run: |
           sudo sh scripts/install.sh --uninstall --purge --yes
-          if id witness; then echo "user not removed"; exit 1; fi
-          test ! -e /var/lib/witness
+          if id keepword; then echo "user not removed"; exit 1; fi
+          test ! -e /var/lib/keepword
 
   # Fresh containers: package installation, rustup, build, service files.
   distros:
@@ -75,19 +75,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t witness .
+      - run: docker build -t keepword .
       - name: Container starts and configures itself
         run: |
-          docker run -d --name witness-ci -p 127.0.0.1:8481:8481 \
-            -e WITNESS_ASN=64500 -e WITNESS_COUNTRY=DE \
-            -e WITNESS_ENDPOINT=https://witness.example.invalid \
-            -e WITNESS_PEERS=https://a.example.invalid,https://b.example.invalid \
-            -e WITNESS_SEEDS=0 \
-            witness
+          docker run -d --name keepword-ci -p 127.0.0.1:8481:8481 \
+            -e KEEPWORD_ASN=64500 -e KEEPWORD_COUNTRY=DE \
+            -e KEEPWORD_ENDPOINT=https://witness.example.invalid \
+            -e KEEPWORD_PEERS=https://a.example.invalid,https://b.example.invalid \
+            -e KEEPWORD_SEEDS=0 \
+            keepword
           for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8481/v1/descriptor && break; sleep 2; done
           curl -fsS http://127.0.0.1:8481/v1/descriptor | grep -q witness.example.invalid
-          test "$(docker exec witness-ci witness config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
-          test "$(docker exec witness-ci witness config get network.seeds)" = false
-          docker exec witness-ci witness id
+          test "$(docker exec keepword-ci keepword config get network.peers)" = '["https://a.example.invalid","https://b.example.invalid"]'
+          test "$(docker exec keepword-ci keepword config get network.seeds)" = false
+          docker exec keepword-ci keepword id
       - if: failure()
-        run: docker logs witness-ci
+        run: docker logs keepword-ci

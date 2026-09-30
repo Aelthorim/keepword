@@ -1,4 +1,4 @@
 target/
 .git/
-witness-data/
+keepword-data/
 *.warc

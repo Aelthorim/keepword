@@ -1,21 +1,21 @@
 # docker compose -f packaging/docker/compose.yaml up -d
 services:
-  witness:
+  keepword:
     build:
       context: ../..
-    image: witness:latest
+    image: keepword:latest
     restart: unless-stopped
     volumes:
-      - witness-data:/data
+      - keepword-data:/data
     ports:
       - "127.0.0.1:8480:8480"   # web UI: local only
       - "127.0.0.1:8481:8481"   # peer API: put a TLS proxy in front
     environment:
-      WITNESS_ASN: ""            # e.g. 3320
-      WITNESS_COUNTRY: ""        # e.g. DE
-      WITNESS_ENDPOINT: ""       # e.g. https://witness.example.org
-      WITNESS_PEERS: ""          # e.g. https://a.example,https://b.example
-      WITNESS_BEHIND_PROXY: "1"
+      KEEPWORD_ASN: ""            # e.g. 3320
+      KEEPWORD_COUNTRY: ""        # e.g. DE
+      KEEPWORD_ENDPOINT: ""       # e.g. https://witness.example.org
+      KEEPWORD_PEERS: ""          # e.g. https://a.example,https://b.example
+      KEEPWORD_BEHIND_PROXY: "1"
 
 volumes:
-  witness-data:
+  keepword-data:

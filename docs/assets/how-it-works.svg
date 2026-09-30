@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="330" viewBox="0 0 1200 330" role="img" aria-labelledby="t d">
-  <title id="t">How Witness works</title>
+  <title id="t">How Keepword works</title>
   <desc id="d">1. Witnesses in different countries visit the same page. 2. Each one seals what it saw, with a tamper-proof time stamp. 3. They compare notes and flag differences and silent edits. 4. Anyone can check the proof, without trusting anyone.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto">

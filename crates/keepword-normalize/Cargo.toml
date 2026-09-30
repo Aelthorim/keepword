@@ -1,0 +1,22 @@
+[package]
+name = "keepword-normalize"
+description = "Canonicalizer that reduces captured pages to their meaningful content, plus the edit diff engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+keepword-core.workspace = true
+ego-tree = "0.6"
+encoding_rs.workspace = true
+regex.workspace = true
+scraper.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+thiserror.workspace = true
+time.workspace = true
+unicode-normalization.workspace = true
+url.workspace = true

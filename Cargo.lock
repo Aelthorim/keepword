@@ -1260,6 +1260,100 @@ dependencies = [
 ]
 
 [[package]]
+name = "keepword-capture"
+version = "2.0.0"
+dependencies = [
+ "chromiumoxide",
+ "futures",
+ "keepword-core",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "url",
+]
+
+[[package]]
+name = "keepword-core"
+version = "2.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "blake3",
+ "drand-verify",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "hex",
+ "ripemd",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "time",
+ "url",
+]
+
+[[package]]
+name = "keepword-node"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "futures",
+ "hex",
+ "humantime",
+ "keepword-capture",
+ "keepword-core",
+ "keepword-normalize",
+ "keepword-store",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "time",
+ "tokio",
+ "toml",
+ "url",
+]
+
+[[package]]
+name = "keepword-normalize"
+version = "2.0.0"
+dependencies = [
+ "ego-tree",
+ "encoding_rs",
+ "keepword-core",
+ "regex",
+ "scraper",
+ "serde",
+ "serde_json",
+ "similar",
+ "thiserror 2.0.21",
+ "time",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
+name = "keepword-store"
+version = "2.0.0"
+dependencies = [
+ "keepword-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3027,100 +3121,6 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
-
-[[package]]
-name = "witness-capture"
-version = "1.2.0"
-dependencies = [
- "chromiumoxide",
- "futures",
- "rcgen",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
- "url",
- "witness-core",
-]
-
-[[package]]
-name = "witness-core"
-version = "1.2.0"
-dependencies = [
- "base64 0.22.1",
- "blake3",
- "drand-verify",
- "ed25519-dalek",
- "getrandom 0.3.4",
- "hex",
- "ripemd",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "time",
- "url",
-]
-
-[[package]]
-name = "witness-node"
-version = "1.2.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "futures",
- "hex",
- "humantime",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "time",
- "tokio",
- "toml",
- "url",
- "witness-capture",
- "witness-core",
- "witness-normalize",
- "witness-store",
-]
-
-[[package]]
-name = "witness-normalize"
-version = "1.2.0"
-dependencies = [
- "ego-tree",
- "encoding_rs",
- "regex",
- "scraper",
- "serde",
- "serde_json",
- "similar",
- "thiserror 2.0.21",
- "time",
- "unicode-normalization",
- "url",
- "witness-core",
-]
-
-[[package]]
-name = "witness-store"
-version = "1.2.0"
-dependencies = [
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.21",
- "witness-core",
-]
 
 [[package]]
 name = "writeable"

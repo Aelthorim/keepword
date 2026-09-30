@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" width="100%" alt="Witness. Web pages change quietly. Now there's proof of what they said.">
+  <img src="docs/assets/banner.svg" width="100%" alt="Keepword. Web pages change quietly. Now there's proof of what they said.">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aelthorim/witness/releases/latest"><img src="https://img.shields.io/github/v/release/Aelthorim/witness?label=release&color=ffb020" alt="Latest release"></a>
-  <a href="https://github.com/Aelthorim/witness/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/witness/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/Aelthorim/keepword/releases/latest"><img src="https://img.shields.io/github/v/release/Aelthorim/keepword?label=release&color=ffb020" alt="Latest release"></a>
+  <a href="https://github.com/Aelthorim/keepword/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/keepword/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/written%20in-Rust-dea584" alt="Written in Rust">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/network-early%20days-8b7bff" alt="Network: early days">
@@ -12,7 +12,7 @@
 
 <p align="center">
   <b>Screenshots can be faked. Archives are run by one organization.<br>
-  Witness is a network of independent witnesses whose records anyone can check.</b>
+  Keepword is a network of independent witnesses whose records anyone can check.</b>
 </p>
 
 ---
@@ -34,13 +34,13 @@ When that happens, how do you prove what the page said? A screenshot takes
 ten seconds to fake. "I saw it with my own eyes" is your word against
 theirs.
 
-## Witness keeps the receipts
+## Keepword keeps the receipts
 
 <p align="center">
   <img src="docs/assets/how-it-works.svg" width="100%" alt="1. Many witnesses in different countries look at the same page. 2. Each one seals what it saw. 3. They compare notes and flag quiet edits. 4. Anyone can check the proof.">
 </p>
 
-Witness is a network of computers, called **witnesses**, run by different
+Keepword is a network of computers, called **witnesses**, run by different
 people in different countries. Point them at a page you care about, and
 they:
 
@@ -52,11 +52,11 @@ they:
    later, the Bitcoin blockchain. Once sealed, a record can't be changed or
    backdated. Not by the website, not by you, not even by the witness that
    made it.
-3. **Compare.** When a page changes without saying so, Witness flags it as
+3. **Compare.** When a page changes without saying so, Keepword flags it as
    a **silent edit** and shows exactly what changed. When witnesses in
    different places were shown different versions, it flags a **split**.
 4. **Prove.** Any record can be exported as a small evidence file. Anyone
-   can check it on their own computer, offline, without trusting Witness,
+   can check it on their own computer, offline, without trusting Keepword,
    the witnesses, or you.
 
 ## What it looks like
@@ -69,10 +69,10 @@ A privacy policy changes, and nothing on the page says so:
 + We may share your data with partners.
 ```
 
-Witness records it as a **silent edit**, and the proof checks out anywhere:
+Keepword records it as a **silent edit**, and the proof checks out anywhere:
 
 ```text
-$ witness verify --bundle evidence.json --esplora https://blockstream.info/api
+$ keepword verify --bundle evidence.json --esplora https://blockstream.info/api
   [ok  ] signature      signed by witness 7b757b5c…
   [ok  ] log inclusion  leaf 1187 of 1204
   [ok  ] cosignatures   tree head cosigned by 16 other keys
@@ -87,7 +87,7 @@ This bundle shows
   - the statement is in that witness's append-only public log
   ...
 It does not show
-  - that independent witnesses saw the same: `witness verdict` shows that
+  - that independent witnesses saw the same: `keepword verdict` shows that
   ...
 ```
 
@@ -100,7 +100,7 @@ Every check says exactly what it proves, and what it doesn't.
 | **any single company** | Witnesses are run by independent people. A verdict only counts when witnesses on at least three different networks agree, so faking one takes three networks, not three keys. |
 | **anyone's promise** | Every record is signed and goes into a public, append-only log. Other witnesses check each log, so rewriting history gets caught, and the proof of it spreads to everyone. |
 | **anyone's clock** | Public randomness proves a record wasn't made *before* a moment; Bitcoin proves it existed *by* a later one. |
-| **Witness itself** | Evidence files check out on any computer, with no account, no server and no internet connection. |
+| **Keepword itself** | Evidence files check out on any computer, with no account, no server and no internet connection. |
 
 ## Who it's for
 
@@ -115,7 +115,7 @@ Every check says exactly what it proves, and what it doesn't.
 ## What it isn't
 
 - **Not an archive of the whole web.** The Internet Archive does that, and
-  does it well. Witness records the pages people choose to watch, and
+  does it well. Keepword records the pages people choose to watch, and
   proves what they said without asking anyone to trust one organization.
 - **Not a lie detector.** It proves what a page *said* and *when*, not
   whether it was *true*.
@@ -139,7 +139,7 @@ Every check says exactly what it proves, and what it doesn't.
 
 **Do I need to be technical?**
 Today, running a witness takes a Linux server and a terminal, but setup is
-a single command. Checking a proof takes the `witness` program. A simpler
+a single command. Checking a proof takes the `keepword` program. A simpler
 way for everyone is on the roadmap.
 
 **What does it cost?**
@@ -157,7 +157,7 @@ others picked at random (so nobody can choose them) look at the page again,
 and only what they can reproduce counts. A witness that rewrites its
 public log gets caught by the witnesses that audit it, and the network
 stops trusting it. Evidence from a single witness is exactly that, and
-`witness verify` says so.
+`keepword verify` says so.
 
 **Can a website stop it?**
 A site can block witnesses, but that's visible too. And a site that shows
@@ -176,7 +176,7 @@ for the details, and check your local law before running a public witness.
 
 # For the technically curious
 
-A Witness node fetches a URL, reduces it to its meaningful content, signs a
+A Keepword node fetches a URL, reduces it to its meaningful content, signs a
 statement about what it saw, and appends that statement to a
 Certificate-Transparency-style Merkle log. It keeps watching, and when the
 page changes it tells you what changed and whether the publisher said so.
@@ -201,15 +201,15 @@ The design, threat model and formats are in [docs/DESIGN.md](docs/DESIGN.md).
 On a server (Debian, Ubuntu, Fedora, RHEL-likes, Arch, openSUSE, Alpine):
 
 ```sh
-git clone https://github.com/aelthorim/witness.git && cd witness
+git clone https://github.com/aelthorim/keepword.git && cd keepword
 sudo sh scripts/install.sh --domain witness.example.org --caddy
 ```
 
-This builds Witness, creates a sandboxed `witness` service with its own user,
+This builds Keepword, creates a sandboxed `keepword` service with its own user,
 fetches the IP-to-ASN table and refreshes it weekly, detects the node's
 network, and puts the peer API behind Caddy with automatic TLS. Re-run it to
-upgrade. Prebuilt static Linux binaries of the `witness` command (x86_64 and
-arm64) are attached to each [release](https://github.com/Aelthorim/witness/releases);
+upgrade. Prebuilt static Linux binaries of the `keepword` command (x86_64 and
+arm64) are attached to each [release](https://github.com/Aelthorim/keepword/releases);
 changes are listed in [CHANGELOG.md](CHANGELOG.md). There is also a
 container image (`Dockerfile`,
 `packaging/docker/compose.yaml`). Both are described in
@@ -220,18 +220,18 @@ container image (`Dockerfile`,
 
 ```sh
 cargo build --release
-alias witness=./target/release/witness
+alias keepword=./target/release/keepword
 
-witness init --asn 3320 --country DE        # creates ./witness-data
-witness capture https://example.org/privacy
-witness watch add https://example.org/privacy --every 6h
-witness serve --watch                        # web UI on http://127.0.0.1:8480
+keepword init --asn 3320 --country DE        # creates ./keepword-data
+keepword capture https://example.org/privacy
+keepword watch add https://example.org/privacy --every 6h
+keepword serve --watch                        # web UI on http://127.0.0.1:8480
 ```
 
 When the page changes:
 
 ```
-$ witness capture https://example.org/privacy
+$ keepword capture https://example.org/privacy
 attestation 7c1e…
   ...
 CHANGED since 3f2a90c1b7d4: silent edit: +1 -1 lines
@@ -247,9 +247,9 @@ CHANGED since 3f2a90c1b7d4: silent edit: +1 -1 lines
 Proving it to someone else:
 
 ```sh
-witness export https://example.org/privacy --at 2026-05-01 -o evidence.json
+keepword export https://example.org/privacy --at 2026-05-01 -o evidence.json
 # they run, with no node and no network:
-witness verify --bundle evidence.json
+keepword verify --bundle evidence.json
 ```
 
 ```
@@ -287,20 +287,20 @@ VERIFIED
 | `alerts` | Split, silent-edit and equivocation alerts |
 | `anchor submit\|upgrade\|list\|export` | Bitcoin anchoring via OpenTimestamps |
 | `beacon [ROUND]` | Fetch and verify a drand beacon |
-| `config show\|get\|set\|unset` | Read or change `witness.toml`, with validation |
+| `config show\|get\|set\|unset` | Read or change `keepword.toml`, with validation |
 
 `--at` takes RFC 3339 or `YYYY-MM-DD` (end of that day, UTC). IDs can be
 abbreviated. `--json` gives machine-readable output.
 
-The node's data directory is `--dir` or `WITNESS_DIR` if given, else
-`./witness-data` if it exists, else the node the installer set up
-(`/var/lib/witness`). Run as root, `witness` switches to the owner of that
-directory, the service user, before doing anything, so `sudo witness …`
+The node's data directory is `--dir` or `KEEPWORD_DIR` if given, else
+`./keepword-data` if it exists, else the node the installer set up
+(`/var/lib/keepword`). Run as root, `keepword` switches to the owner of that
+directory, the service user, before doing anything, so `sudo keepword …`
 just works on an installed node.
 
 ## Configuration
 
-`witness-data/witness.toml`; see [docs/witness.example.toml](docs/witness.example.toml).
+`keepword-data/keepword.toml`; see [docs/keepword.example.toml](docs/keepword.example.toml).
 The important settings:
 
 - `content.retain`: what to keep. `full`, `normalized` (diffs without raw
@@ -315,11 +315,11 @@ The important settings:
 ## Running in a network
 
 ```sh
-witness init --asn 3320 --country DE
-# in witness-data/witness.toml:
+keepword init --asn 3320 --country DE
+# in keepword-data/keepword.toml:
 #   [network]  endpoint = "https://witness.example.org"   peers = ["https://other.example"]
-#   [quorum]   asn_db = "/var/lib/witness/ip2asn-combined.tsv"   (from iptoasn.com)
-witness serve --api-addr 0.0.0.0:8481 --watch --anchor
+#   [quorum]   asn_db = "/var/lib/keepword/ip2asn-combined.tsv"   (from iptoasn.com)
+keepword serve --api-addr 0.0.0.0:8481 --watch --anchor
 ```
 
 Put the API (`/v1/...`) behind TLS on your public endpoint. Keep the web UI
@@ -335,14 +335,14 @@ For high-value pages, a second witness can notarize the TLS session itself
 witness couldn't have made the content up on its own:
 
 ```sh
-cd crates/witness-tlsn          # separate workspace, Rust 1.95+
+cd crates/keepword-tlsn          # separate workspace, Rust 1.95+
 cargo build --release
-witness-tlsn serve --addr 0.0.0.0:8482                    # on the notary
-witness-tlsn capture https://example.org/terms --verifier notary.example.net:8482 --verifier-key <hex>
+keepword-tlsn serve --addr 0.0.0.0:8482                    # on the notary
+keepword-tlsn capture https://example.org/terms --verifier notary.example.net:8482 --verifier-key <hex>
 ```
 
 Bundles then carry the notary's receipt and the transcript, and
-`witness verify` checks both.
+`keepword verify` checks both.
 
 ## Headless rendering
 
@@ -350,7 +350,7 @@ For pages that only exist after JavaScript runs:
 
 ```sh
 cargo build --release --features render
-witness capture --render https://example.org/app
+keepword capture --render https://example.org/app
 ```
 
 This needs Chrome or Chromium; set `capture.chrome` if it isn't on `PATH`.
@@ -361,17 +361,17 @@ network requests are rendered only with `network.render_requests`.
 ## Layout
 
 ```
-crates/witness-core       protocol: encoding, attestations, Merkle log, bundles, assignment, quorum
-crates/witness-normalize  canonicalizer, site rules, diff and silent-edit classifier
-crates/witness-capture    HTTP capture, SSRF guard, headless render, WARC export
-crates/witness-store      blob store, SQLite index, log, watchlist
-crates/witness-node       the `witness` binary: CLI, peer API, federation, web UI
-crates/witness-tlsn       TLSNotary proof tier (separate workspace)
-docs/DESIGN.md            threat model, formats, network design, roadmap
-docs/INSTALL.md           production installation (installer, container)
-docs/NETWORK.md           starting or joining a public witness network
-scripts/install.sh        the installer
-packaging/docker/         container entrypoint and compose file
+crates/keepword-core       protocol: encoding, attestations, Merkle log, bundles, assignment, quorum
+crates/keepword-normalize  canonicalizer, site rules, diff and silent-edit classifier
+crates/keepword-capture    HTTP capture, SSRF guard, headless render, WARC export
+crates/keepword-store      blob store, SQLite index, log, watchlist
+crates/keepword-node       the `keepword` binary: CLI, peer API, federation, web UI
+crates/keepword-tlsn       TLSNotary proof tier (separate workspace)
+docs/DESIGN.md             threat model, formats, network design, roadmap
+docs/INSTALL.md            production installation (installer, container)
+docs/NETWORK.md            starting or joining a public Keepword network
+scripts/install.sh         the installer
+packaging/docker/          container entrypoint and compose file
 ```
 
 ## Development
@@ -396,13 +396,13 @@ Integration tests run everything over real HTTP on localhost:
   difference
 - `anchoring.rs`: drand beacons and Bitcoin anchoring against mock drand,
   OpenTimestamps and Esplora services
-- `witness-normalize/tests/corpus.rs`: the normalizer regression corpus
-- `witness-tlsn/tests/notary.rs`: a full MPC-TLS notarization between two
+- `keepword-normalize/tests/corpus.rs`: the normalizer regression corpus
+- `keepword-tlsn/tests/notary.rs`: a full MPC-TLS notarization between two
   witnesses against TLSNotary's test server
 
 ## License
 
-Witness is free software under the [GNU Affero General Public License
+Keepword is free software under the [GNU Affero General Public License
 v3.0](LICENSE). You may use, study, change and share it. If you run a
 modified version as a service for others, you must offer them its source
 code under the same license.
