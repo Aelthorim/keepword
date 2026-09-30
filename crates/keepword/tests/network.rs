@@ -6,12 +6,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use keepword::Node;
+use keepword::config::Config;
 use keepword_core::TreeHead;
 use keepword_core::bundle::Status;
 use keepword_core::net::{AlertKind, Gossip};
 use keepword_core::quorum::Verdict;
-use keepword::Node;
-use keepword::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 

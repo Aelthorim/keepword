@@ -10,11 +10,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use keepword::Node;
+use keepword::config::Config;
 use keepword_core::beacon::Beacon;
 use keepword_core::bundle::Status;
 use keepword_core::ots::{self, Attestation, Op, Timestamp};
-use keepword::Node;
-use keepword::config::Config;
 use tokio::net::TcpListener;
 
 const SIG_123: &str = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";

@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use keepword_core::{WitnessKey, target};
 use keepword::Node;
+use keepword_core::{WitnessKey, target};
 use keepword_tlsn::{Limits, Notary, VerifierService, capture_with, connect_server, mozilla_roots};
 
 #[derive(Parser)]

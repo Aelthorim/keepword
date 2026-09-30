@@ -7,13 +7,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use keepword::Node;
+use keepword::config::Config;
+use keepword::federation::{PushRequest, PushResponse};
 use keepword_core::beacon::{Beacon, round_at};
 use keepword_core::net::{Alert, AlertKind, Descriptor, Gossip, PushEnvelope, WatchRequest};
 use keepword_core::statement::Signed;
 use keepword_core::{Keypair, now_ms};
-use keepword::Node;
-use keepword::config::Config;
-use keepword::federation::{PushRequest, PushResponse};
 use tokio::net::TcpListener;
 
 fn new_node() -> (tempfile::TempDir, Node) {

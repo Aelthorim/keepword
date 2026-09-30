@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use keepword_core::bundle::{Bundle, Report, Status};
-use keepword_core::{format_ms, merkle, now_ms, target};
 use keepword::config::{Config, ContentConfig, Retain, VantageConfig};
 use keepword::{Node, Outcome, method_name, parse_time};
+use keepword_core::bundle::{Bundle, Report, Status};
+use keepword_core::{format_ms, merkle, now_ms, target};
 use keepword_normalize::diff;
 
 #[derive(Parser)]
@@ -640,9 +640,9 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             }
             if anchor {
                 let n = node.clone();
-                tasks.spawn(async move {
-                    keepword::daemon::anchor_loop(n, |l| eprintln!("{l}")).await
-                });
+                tasks.spawn(
+                    async move { keepword::daemon::anchor_loop(n, |l| eprintln!("{l}")).await },
+                );
             }
             tokio::select! {
                 Some(r) = tasks.join_next() => r??,

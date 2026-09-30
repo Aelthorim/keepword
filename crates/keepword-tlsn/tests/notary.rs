@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use keepword_core::bundle::Status;
 use keepword::Node;
 use keepword::config::Config;
+use keepword_core::bundle::Status;
 use keepword_tlsn::{Limits, Notary, VerifierService, capture_with, roots_from};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
