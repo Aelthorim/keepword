@@ -266,7 +266,7 @@ keepword-store      BLAKE3 blob store, SQLite index, log + tree heads,
                     watchlist, change table, purge; peers, audited heads,
                     gossip outbox, requests, cosignatures, observations,
                     alerts, beacons, anchors, reputation
-keepword-node       `keepword` CLI, peer API, federation, verdicts,
+keepword            `keepword` CLI, peer API, federation, verdicts,
                     anchoring, watch scheduler, web UI
 ```
 
@@ -305,7 +305,7 @@ uses plain HTTPS between nodes instead:
   as a second transport. All messages are transport-agnostic signed
   statements.
 
-The API (`/v1`, see `crates/keepword-node/src/api.rs`) serves the node's
+The API (`/v1`, see `crates/keepword/src/api.rs`) serves the node's
 descriptor, known peers, tree head, leaf IDs, attestations, inclusion and
 consistency proofs, bundles, and its gossip outbox, and accepts pushes. It
 never serves page content, except blobs for hosts on

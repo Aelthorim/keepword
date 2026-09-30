@@ -1850,6 +1850,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "keepword"
+version = "2.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "futures",
+ "hex",
+ "humantime",
+ "keepword-capture",
+ "keepword-core",
+ "keepword-normalize",
+ "keepword-store",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "keepword-capture"
 version = "2.0.0"
 dependencies = [
@@ -1880,30 +1904,6 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "time",
- "url",
-]
-
-[[package]]
-name = "keepword-node"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "axum",
- "clap",
- "futures",
- "hex",
- "humantime",
- "keepword-capture",
- "keepword-core",
- "keepword-normalize",
- "keepword-store",
- "libc",
- "reqwest",
- "serde",
- "serde_json",
- "time",
- "tokio",
- "toml",
  "url",
 ]
 
@@ -1945,9 +1945,9 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "keepword",
  "keepword-capture",
  "keepword-core",
- "keepword-node",
  "rustls",
  "serde",
  "serde_json",

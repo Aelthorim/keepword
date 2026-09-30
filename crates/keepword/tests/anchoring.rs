@@ -10,11 +10,11 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use keepword::Node;
+use keepword::config::Config;
 use keepword_core::beacon::Beacon;
 use keepword_core::bundle::Status;
 use keepword_core::ots::{self, Attestation, Op, Timestamp};
-use keepword_node::Node;
-use keepword_node::config::Config;
 use tokio::net::TcpListener;
 
 const SIG_123: &str = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";
@@ -176,8 +176,8 @@ async fn beacon_and_bitcoin_anchor() {
     let mut r = Node::verify_bundle(&b);
     let anchor = r.checks.iter().find(|c| c.name == "anchor").unwrap();
     assert!(anchor.detail.contains("block 800000"), "{}", anchor.detail);
-    let http = keepword_node::httpc::Http::new(true, false).unwrap();
-    keepword_node::anchor::verify_anchor_online(&http, &base, &b, &mut r).await;
+    let http = keepword::httpc::Http::new(true, false).unwrap();
+    keepword::anchor::verify_anchor_online(&http, &base, &b, &mut r).await;
     let btc = r.checks.iter().find(|c| c.name == "bitcoin").unwrap();
     assert_eq!(btc.status, Status::Pass, "{}", btc.detail);
     assert!(r.ok());
@@ -185,7 +185,7 @@ async fn beacon_and_bitcoin_anchor() {
     // A chain that disagrees fails the check.
     m.wrong_root.store(true, Ordering::SeqCst);
     let mut r = Node::verify_bundle(&b);
-    keepword_node::anchor::verify_anchor_online(&http, &base, &b, &mut r).await;
+    keepword::anchor::verify_anchor_online(&http, &base, &b, &mut r).await;
     assert_eq!(
         r.checks
             .iter()

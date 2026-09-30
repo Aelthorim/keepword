@@ -392,12 +392,12 @@ step "Getting the source"
 if [ -z "$SOURCE" ]; then
     here=""
     if cd "$(dirname "$0")" 2>/dev/null; then here=$(pwd); cd - >/dev/null; fi
-    if [ -n "$here" ] && [ -f "$here/../crates/keepword-node/Cargo.toml" ]; then
+    if [ -n "$here" ] && [ -f "$here/../crates/keepword/Cargo.toml" ]; then
         SOURCE=$(cd "$here/.." && pwd)
     fi
 fi
 if [ -n "$SOURCE" ]; then
-    [ -f "$SOURCE/crates/keepword-node/Cargo.toml" ] || die "$SOURCE is not a Keepword checkout"
+    [ -f "$SOURCE/crates/keepword/Cargo.toml" ] || die "$SOURCE is not a Keepword checkout"
     SOURCE=$(cd "$SOURCE" && pwd)
     info "building from $SOURCE"
 else
@@ -420,7 +420,7 @@ mkdir -p "$CARGO_TARGET_DIR"
 features=""
 [ "$RENDER" -eq 0 ] || features="--features render"
 # shellcheck disable=SC2086
-(cd "$SOURCE" && "$CARGO" build --release --locked -q -p keepword-node $features)
+(cd "$SOURCE" && "$CARGO" build --release --locked -q -p keepword $features)
 install -d "$BIN"
 install -m 0755 "$CARGO_TARGET_DIR/release/keepword" "$BIN/keepword.new"
 mv -f "$BIN/keepword.new" "$BIN/keepword"

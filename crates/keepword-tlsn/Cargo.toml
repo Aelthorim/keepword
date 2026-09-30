@@ -5,6 +5,7 @@ version = "2.0.0"
 edition = "2024"
 # tlsn requires a recent toolchain.
 rust-version = "1.95"
+# Not on crates.io: tlsn is only available from git.
 publish = false
 license = "AGPL-3.0-only"
 
@@ -19,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 keepword-core = { path = "../keepword-core" }
 keepword-capture = { path = "../keepword-capture" }
-keepword-node = { path = "../keepword-node" }
+keepword = { path = "../keepword" }
 
 tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7", features = ["mozilla-certs"] }
 

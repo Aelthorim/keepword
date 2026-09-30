@@ -134,7 +134,7 @@ Withdraw the test request when you're done:
 
 Put the endpoints of two or three founding witnesses, ideally run by
 different people, into `DEFAULT_SEEDS` in
-`crates/keepword-node/src/config.rs`. Every node built from the code then
+`crates/keepword/src/config.rs`. Every node built from the code then
 dials them when it knows few peers, so a newcomer joins with just:
 
 ```sh
