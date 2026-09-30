@@ -17,6 +17,16 @@ The whole project changes name at once, protocol included, so this is a
 clean break: 2.0.0 nodes don't federate with 1.x nodes, and 1.x logs and
 bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
 
+### Added
+
+- **A logo:** a gold seal stamped with a quotation mark, for what a page
+  said, sealed. `docs/assets` has the seal on its own (`logo.svg`, and
+  `logo-512.png` for avatars) and with the name, for light and dark
+  backgrounds (`logo-wordmark.svg`, `logo-wordmark-white.svg`). The
+  banner and the social preview use it (`social-preview.svg` is the
+  source of `social-preview.png`), and the web UI shows it in its header
+  and as its tab icon.
+
 ### Changed
 
 - **The command is `keepword`** (and `keepword-tlsn` for the TLSNotary
