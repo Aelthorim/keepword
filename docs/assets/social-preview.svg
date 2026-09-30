@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="t d">
+  <title id="t">Keepword</title>
+  <desc id="d">The repository's social preview: the README banner with one more line, "Independent · Tamper-evident · Verifiable by anyone". Rendered to social-preview.png at 1280 by 640.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1026"/>
+      <stop offset="1" stop-color="#1b1446"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.78" cy="0.45" r="0.5">
+      <stop offset="0" stop-color="#6d5dfc" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#6d5dfc" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="seal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffcf5c"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+
+  <!-- the banner, moved down -->
+  <g transform="translate(0 65)">
+    <!-- the network: independent witnesses around the page -->
+    <g stroke="#8b7bff" stroke-opacity="0.35" stroke-width="1.5" fill="none">
+      <path d="M700 70 L840 150"/>
+      <path d="M1210 90 L1110 150"/>
+      <path d="M1225 360 L1110 300"/>
+      <path d="M690 380 L830 300"/>
+      <path d="M700 70 L1210 90" stroke-dasharray="4 8"/>
+      <path d="M1225 360 L690 380" stroke-dasharray="4 8"/>
+    </g>
+    <g fill="#b4a9ff">
+      <circle cx="700" cy="70" r="7"/>
+      <circle cx="1210" cy="90" r="7"/>
+      <circle cx="1225" cy="360" r="7"/>
+      <circle cx="690" cy="380" r="7"/>
+    </g>
+    <g fill="#b4a9ff" fill-opacity="0.5" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">
+      <text x="662" y="52">Frankfurt</text>
+      <text x="1172" y="72">Paris</text>
+      <text x="1180" y="392">Toronto</text>
+      <text x="656" y="412">Singapore</text>
+    </g>
+
+    <!-- the page -->
+    <g filter="url(#shadow)">
+      <rect x="820" y="120" width="310" height="210" rx="14" fill="#ffffff"/>
+    </g>
+    <rect x="820" y="120" width="310" height="34" rx="14" fill="#eef0f6"/>
+    <rect x="820" y="140" width="310" height="14" fill="#eef0f6"/>
+    <circle cx="842" cy="137" r="5" fill="#ff6b6b"/>
+    <circle cx="860" cy="137" r="5" fill="#ffc94d"/>
+    <circle cx="878" cy="137" r="5" fill="#51cf66"/>
+    <rect x="898" y="129" width="212" height="16" rx="8" fill="#ffffff"/>
+    <text x="908" y="141" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8a8fa3">shop.example/privacy</text>
+
+    <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+      <text x="842" y="186" font-size="19" font-weight="700" fill="#1b1f33">Privacy Policy</text>
+      <rect x="842" y="202" width="266" height="30" rx="6" fill="#ffe3e3"/>
+      <text x="852" y="222" font-size="14" fill="#c92a2a">− We never sell your data.</text>
+      <line x1="866" y1="217" x2="1013" y2="217" stroke="#c92a2a" stroke-width="1.6"/>
+      <rect x="842" y="240" width="266" height="30" rx="6" fill="#d3f9d8"/>
+      <text x="852" y="260" font-size="14" fill="#2b8a3e">+ We may share your data…</text>
+      <rect x="842" y="284" width="190" height="8" rx="4" fill="#e9ecf3"/>
+      <rect x="842" y="302" width="140" height="8" rx="4" fill="#e9ecf3"/>
+    </g>
+
+    <!-- the seal -->
+    <g transform="translate(1108 318) rotate(-12)">
+      <circle r="54" fill="url(#seal)"/>
+      <circle r="46" fill="none" stroke="#7a4b00" stroke-opacity="0.55" stroke-width="1.5" stroke-dasharray="3 3"/>
+      <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" text-anchor="middle" fill="#4a2c00">
+        <text y="-14" font-size="11" font-weight="700" letter-spacing="1.5">WITNESSED</text>
+        <text y="8" font-size="21" font-weight="800">3 ✓</text>
+        <text y="25" font-size="8.5" font-weight="700" letter-spacing="0.3">NETWORKS AGREE</text>
+      </g>
+    </g>
+
+    <!-- the logo: the seal and the name -->
+    <g transform="translate(72 150)">
+      <g transform="translate(-4 -89) scale(2.00000)">
+        <defs>
+          <linearGradient id="kw-seal" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ffcf5c"/>
+            <stop offset="1" stop-color="#f59e0b"/>
+          </linearGradient>
+        </defs>
+        <circle cx="32" cy="32" r="30" fill="url(#kw-seal)"/>
+        <circle cx="32" cy="32" r="25.6" fill="none" stroke="#4a2c00" stroke-opacity="0.45" stroke-width="1.3" stroke-dasharray="2.011 2.011" stroke-dashoffset="1.005"/>
+        <path fill="#1b1446" d="M28.1 22.28 30.54 25.98 29.9 26.4Q28.03 27.64 27.44 28.41Q26.85 29.18 26.85 30.29V31.05L25.57 29.79Q28.24 29.79 29.73 31.3Q31.21 32.8 31.21 35.48Q31.21 38.13 29.71 39.63Q28.22 41.12 25.54 41.12Q23.55 41.12 22.2 40.28Q20.85 39.44 20.18 37.9Q19.5 36.36 19.5 34.27Q19.5 30.41 21.44 27.72Q23.39 25.03 26.4 23.28L28.1 22.28ZM41.4 22.28 43.84 25.98 43.2 26.4Q41.32 27.64 40.73 28.41Q40.14 29.18 40.14 30.29V31.05L38.86 29.79Q41.54 29.79 43.02 31.3Q44.5 32.8 44.5 35.48Q44.5 38.13 43.01 39.63Q41.51 41.12 38.84 41.12Q36.85 41.12 35.5 40.28Q34.14 39.44 33.47 37.9Q32.79 36.36 32.79 34.27Q32.79 30.41 34.74 27.72Q36.68 25.03 39.69 23.28L41.4 22.28Z"/>
+      </g>
+      <path fill="#ffffff" d="M147.5 0V-50H160.03V-30.65L179.05 -50H194.18L175.97 -31.59L195.86 0H181.57L167.5 -23.19L160.03 -15.59V0H147.5ZM214.93 0.94Q209.36 0.94 204.77 -1.47Q200.18 -3.88 197.44 -8.31Q194.69 -12.74 194.69 -18.82Q194.69 -24.83 197.37 -29.23Q200.05 -33.62 204.62 -36.03Q209.2 -38.44 214.93 -38.44Q218.08 -38.44 221.33 -37.5Q224.58 -36.56 227.32 -34.16Q230.06 -31.76 231.74 -27.45Q233.41 -23.14 233.41 -16.41H202.51V-22.77H222.53L221.65 -21.07Q221.34 -24.34 220.37 -26.35Q219.39 -28.37 217.91 -29.3Q216.43 -30.22 214.58 -30.22Q212.04 -30.22 210.44 -28.72Q208.84 -27.22 208.07 -24.63Q207.3 -22.05 207.3 -18.76Q207.3 -13.8 209.09 -10.81Q210.88 -7.82 214.82 -7.82Q217.26 -7.82 219.07 -9.09Q220.88 -10.36 221.91 -13.1L232.74 -10.52Q231.41 -6.41 228.58 -3.89Q225.75 -1.36 222.15 -0.21Q218.55 0.94 214.93 0.94ZM257.37 0.94Q251.81 0.94 247.22 -1.47Q242.63 -3.88 239.88 -8.31Q237.14 -12.74 237.14 -18.82Q237.14 -24.83 239.82 -29.23Q242.49 -33.62 247.07 -36.03Q251.65 -38.44 257.37 -38.44Q260.52 -38.44 263.77 -37.5Q267.02 -36.56 269.76 -34.16Q272.51 -31.76 274.18 -27.45Q275.85 -23.14 275.85 -16.41H244.95V-22.77H264.97L264.1 -21.07Q263.79 -24.34 262.81 -26.35Q261.84 -28.37 260.36 -29.3Q258.87 -30.22 257.02 -30.22Q254.49 -30.22 252.89 -28.72Q251.28 -27.22 250.52 -24.63Q249.75 -22.05 249.75 -18.76Q249.75 -13.8 251.54 -10.81Q253.32 -7.82 257.26 -7.82Q259.71 -7.82 261.52 -9.09Q263.33 -10.36 264.35 -13.1L275.18 -10.52Q273.86 -6.41 271.03 -3.89Q268.2 -1.36 264.6 -0.21Q261 0.94 257.37 0.94ZM281.71 13.54V-37.5H293.26V-30.1L293.16 -30.63Q295.26 -34.75 298.38 -36.6Q301.5 -38.44 305.55 -38.44Q310.35 -38.44 313.8 -36.11Q317.24 -33.79 319.09 -29.36Q320.94 -24.94 320.94 -18.66Q320.94 -12.44 319.07 -8.04Q317.21 -3.65 313.71 -1.35Q310.21 0.94 305.3 0.94Q300.97 0.94 297.88 -1.02Q294.78 -2.98 292.7 -7.3L293.85 -7.31V13.54H281.71ZM300.79 -8.09Q304.21 -8.09 306.17 -10.99Q308.14 -13.88 308.14 -18.91Q308.14 -23.89 306.22 -26.66Q304.31 -29.43 300.86 -29.43Q298.68 -29.43 296.95 -28.25Q295.23 -27.06 294.25 -24.69Q293.27 -22.32 293.27 -18.8Q293.27 -13.53 295.42 -10.81Q297.58 -8.09 300.79 -8.09ZM331.98 0 323.36 -37.5H335.93L340.87 -7.54H340.06L346.6 -37.5H362.89L369.33 -7.51H368.36L373.5 -37.5H385.28L376.61 0H359.76L353.33 -33.54H355.44L348.82 0H331.98ZM407.03 0.94Q401.21 0.94 396.77 -1.56Q392.33 -4.06 389.84 -8.51Q387.35 -12.95 387.35 -18.76Q387.35 -24.58 389.84 -29.01Q392.33 -33.45 396.77 -35.95Q401.21 -38.44 407.03 -38.44Q412.88 -38.44 417.32 -35.95Q421.75 -33.45 424.26 -29.02Q426.76 -24.58 426.76 -18.75Q426.76 -12.92 424.26 -8.49Q421.76 -4.05 417.31 -1.55Q412.85 0.94 407.03 0.94ZM407.06 -7.79Q410.35 -7.79 412.25 -10.74Q414.15 -13.69 414.15 -18.75Q414.15 -23.82 412.24 -26.76Q410.34 -29.71 407.05 -29.71Q403.76 -29.71 401.86 -26.76Q399.96 -23.82 399.96 -18.75Q399.96 -13.66 401.87 -10.73Q403.77 -7.79 407.06 -7.79ZM432.45 0V-37.5H444.27V-28.87L443.76 -30.04Q445.59 -34.34 448.76 -36.39Q451.94 -38.44 455.92 -38.44Q457.04 -38.44 458.21 -38.27Q459.38 -38.1 460.57 -37.68L459.78 -27.5Q457.38 -28.14 455.2 -28.14Q453.28 -28.14 451.4 -27.51Q449.51 -26.88 447.98 -25.36Q446.45 -23.85 445.53 -21.21Q444.61 -18.56 444.61 -14.57V0H432.45ZM477.41 0.94Q472.65 0.94 469.19 -1.4Q465.72 -3.74 463.87 -8.16Q462.03 -12.59 462.03 -18.84Q462.03 -25.09 463.89 -29.47Q465.76 -33.85 469.24 -36.15Q472.73 -38.44 477.63 -38.44Q481.97 -38.44 485.07 -36.49Q488.18 -34.54 490.27 -30.2L489.06 -30.22V-52.08H501.23V0H489.68V-7.43L489.77 -6.9Q487.75 -2.86 484.64 -0.96Q481.52 0.94 477.41 0.94ZM482.08 -8.09Q484.3 -8.09 486.02 -9.28Q487.74 -10.47 488.72 -12.84Q489.7 -15.21 489.7 -18.7Q489.7 -23.98 487.54 -26.71Q485.39 -29.43 482.18 -29.43Q478.78 -29.43 476.8 -26.54Q474.83 -23.64 474.83 -18.59Q474.83 -13.67 476.74 -10.88Q478.65 -8.09 482.08 -8.09Z"/>
+    </g>
+
+    <!-- words -->
+    <g font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+      <text x="74" y="226" font-size="30" font-weight="600" fill="#e8e5ff">Web pages change quietly.</text>
+      <text x="74" y="266" font-size="30" font-weight="600" fill="#ffcf5c">Now there's proof of what they said.</text>
+      <text x="74" y="322" font-size="18" fill="#b9b6d9">Independent witnesses around the world record web pages,</text>
+      <text x="74" y="348" font-size="18" fill="#b9b6d9">seal what they saw with cryptography, and catch every</text>
+      <text x="74" y="374" font-size="18" fill="#b9b6d9">silent edit. Anyone can check the proof.</text>
+    </g>
+  </g>
+
+  <text x="640" y="600" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="600" fill="#c3bdf2">Independent · Tamper-evident · <tspan fill="#ffcf5c">Verifiable by anyone</tspan></text>
+</svg>

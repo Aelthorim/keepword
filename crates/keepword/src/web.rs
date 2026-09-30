@@ -77,6 +77,7 @@ pub fn router(node: Arc<Node>) -> Router {
         .route("/api/tree-head", get(tree_head))
         .route("/network", get(network_page))
         .route("/alerts", get(alerts_page))
+        .route("/favicon.svg", get(favicon))
         .with_state(node)
 }
 
@@ -132,14 +133,30 @@ th{font-weight:600;color:var(--muted);font-size:13px}.wrap{overflow-x:auto}
 .diff div{white-space:pre-wrap;word-break:break-word;padding:1px 8px}.diff .ins{background:var(--add)}.diff .del{background:var(--del)}
 .diff .gap{color:var(--muted);font-style:italic}.pass{color:#2e7d32}.fail{color:var(--warn);font-weight:600}
 pre{background:var(--line);padding:12px;overflow-x:auto;border-radius:6px}
+.brand img{vertical-align:-4px;margin-right:6px}
 "#;
+
+/// Keepword's seal: the tab icon, and the mark in the page header.
+const FAVICON: &str = include_str!("favicon.svg");
+
+async fn favicon() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        FAVICON,
+    )
+        .into_response()
+}
 
 fn page(title: &str, body: &str) -> Html<String> {
     Html(format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8>\
          <meta name=viewport content='width=device-width,initial-scale=1'>\
-         <title>{} · Keepword</title><style>{CSS}</style></head>\
-         <body><main><p class=muted><a href='/'>Keepword</a> · <a href='/network'>Network</a> · <a href='/alerts'>Alerts</a></p>{body}\
+         <title>{} · Keepword</title><link rel=icon href='/favicon.svg' type='image/svg+xml'>\
+         <style>{CSS}</style></head>\
+         <body><main><p class=muted><a class=brand href='/'><img src='/favicon.svg' alt='' width=18 height=18>Keepword</a> · <a href='/network'>Network</a> · <a href='/alerts'>Alerts</a></p>{body}\
          <p class=muted>Keepword {} · free software under the AGPL-3.0 · <a href='{}'>source code</a></p></main></body></html>",
         esc(title),
         env!("CARGO_PKG_VERSION"),
