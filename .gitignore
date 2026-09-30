@@ -1,3 +1,4 @@
 target/
 /keepword-data
 *.warc
+.direnv/
