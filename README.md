@@ -365,7 +365,7 @@ crates/keepword-core       protocol: encoding, attestations, Merkle log, bundles
 crates/keepword-normalize  canonicalizer, site rules, diff and silent-edit classifier
 crates/keepword-capture    HTTP capture, SSRF guard, headless render, WARC export
 crates/keepword-store      blob store, SQLite index, log, watchlist
-crates/keepword-node       the `keepword` binary: CLI, peer API, federation, web UI
+crates/keepword            the `keepword` binary: CLI, peer API, federation, web UI
 crates/keepword-tlsn       TLSNotary proof tier (separate workspace)
 docs/DESIGN.md             threat model, formats, network design, roadmap
 docs/INSTALL.md            production installation (installer, container)

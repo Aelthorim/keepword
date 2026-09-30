@@ -20,8 +20,8 @@ bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
 ### Changed
 
 - **The command is `keepword`** (and `keepword-tlsn` for the TLSNotary
-  tier), and the crates are `keepword-core`, `keepword-normalize`,
-  `keepword-capture`, `keepword-store`, `keepword-node` and
+  tier), and the crates are `keepword` (the node), `keepword-core`,
+  `keepword-normalize`, `keepword-capture`, `keepword-store` and
   `keepword-tlsn`. The repository is github.com/Aelthorim/keepword.
 - **Names on a node:** the data directory is `/var/lib/keepword` (or
   `./keepword-data` for a development node, or `KEEPWORD_DIR`), the config

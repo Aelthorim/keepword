@@ -28,12 +28,12 @@ jobs:
           key: ${{ matrix.target }}
       - name: Check the tag matches the crate version
         run: |
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "keepword-node") | .version')
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "keepword") | .version')
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $version"; exit 1; }
       - name: Install zig and cargo-zigbuild
         run: pip install ziglang==0.13.0 cargo-zigbuild
       - name: Build
-        run: cargo zigbuild --release --locked -p keepword-node --target ${{ matrix.target }}
+        run: cargo zigbuild --release --locked -p keepword --target ${{ matrix.target }}
       - name: Package
         run: |
           name=keepword-${GITHUB_REF_NAME}-${{ matrix.target }}

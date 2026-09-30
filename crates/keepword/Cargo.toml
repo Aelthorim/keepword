@@ -1,5 +1,5 @@
 [package]
-name = "keepword-node"
+name = "keepword"
 description = "The Keepword node: CLI, watch scheduler and web UI"
 version.workspace = true
 edition.workspace = true

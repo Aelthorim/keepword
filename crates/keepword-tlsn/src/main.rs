@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use keepword_core::{WitnessKey, target};
-use keepword_node::Node;
+use keepword::Node;
 use keepword_tlsn::{Limits, Notary, VerifierService, capture_with, connect_server, mozilla_roots};
 
 #[derive(Parser)]
@@ -48,9 +48,9 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let dir = keepword_node::sysdir::resolve(cli.dir.clone());
+    let dir = keepword::sysdir::resolve(cli.dir.clone());
     // Before the runtime starts any threads.
-    keepword_node::sysdir::become_owner(&dir)?;
+    keepword::sysdir::become_owner(&dir)?;
     tokio::runtime::Runtime::new()?.block_on(run(cli, dir))
 }
 

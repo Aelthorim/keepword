@@ -10,8 +10,8 @@ use keepword_core::TreeHead;
 use keepword_core::bundle::Status;
 use keepword_core::net::{AlertKind, Gossip};
 use keepword_core::quorum::Verdict;
-use keepword_node::Node;
-use keepword_node::config::Config;
+use keepword::Node;
+use keepword::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -111,7 +111,7 @@ async fn spawn_with(
     tweak(&mut cfg);
     Node::init(dir.path(), &cfg).unwrap();
     let node = Arc::new(Node::open(dir.path()).unwrap());
-    let app = keepword_node::api::router(node.clone());
+    let app = keepword::api::router(node.clone());
     tokio::spawn(async move {
         axum::serve(
             listener,
@@ -222,7 +222,7 @@ async fn four_witnesses() {
             .any(|w| w.url == requested && w.request_id.is_some())
         {
             assigned += 1;
-            keepword_node::web::run_due(&n.node, |_| {}).await.unwrap();
+            keepword::web::run_due(&n.node, |_| {}).await.unwrap();
         }
     }
     assert_eq!(assigned, 4);

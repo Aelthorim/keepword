@@ -11,9 +11,9 @@ use keepword_core::beacon::{Beacon, round_at};
 use keepword_core::net::{Alert, AlertKind, Descriptor, Gossip, PushEnvelope, WatchRequest};
 use keepword_core::statement::Signed;
 use keepword_core::{Keypair, now_ms};
-use keepword_node::Node;
-use keepword_node::config::Config;
-use keepword_node::federation::{PushRequest, PushResponse};
+use keepword::Node;
+use keepword::config::Config;
+use keepword::federation::{PushRequest, PushResponse};
 use tokio::net::TcpListener;
 
 fn new_node() -> (tempfile::TempDir, Node) {
@@ -196,7 +196,7 @@ async fn spawn_with(asn: u32, peers: Vec<String>, tweak: impl FnOnce(&mut Config
     tweak(&mut cfg);
     Node::init(dir.path(), &cfg).unwrap();
     let node = Arc::new(Node::open(dir.path()).unwrap());
-    let app = keepword_node::api::router(node.clone());
+    let app = keepword::api::router(node.clone());
     tokio::spawn(async move {
         axum::serve(
             listener,

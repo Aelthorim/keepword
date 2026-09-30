@@ -14,7 +14,7 @@ COPY . .
 ARG FEATURES=""
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p keepword-node ${FEATURES:+--features $FEATURES} \
+    cargo build --release --locked -p keepword ${FEATURES:+--features $FEATURES} \
     && install -m 0755 target/release/keepword /usr/local/bin/keepword
 
 FROM debian:bookworm-slim

@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use keepword_core::bundle::{Bundle, Report, Status};
 use keepword_core::{format_ms, merkle, now_ms, target};
-use keepword_node::config::{Config, ContentConfig, Retain, VantageConfig};
-use keepword_node::{Node, Outcome, method_name, parse_time};
+use keepword::config::{Config, ContentConfig, Retain, VantageConfig};
+use keepword::{Node, Outcome, method_name, parse_time};
 use keepword_normalize::diff;
 
 #[derive(Parser)]
@@ -277,11 +277,11 @@ fn main() {
     let cli = Cli::parse();
     // `init` creates a node, so it never picks the installed one by itself.
     let dir = match (&cli.cmd, &cli.dir) {
-        (Cmd::Init { .. }, None) => PathBuf::from(keepword_node::sysdir::LOCAL_DIR),
-        _ => keepword_node::sysdir::resolve(cli.dir.clone()),
+        (Cmd::Init { .. }, None) => PathBuf::from(keepword::sysdir::LOCAL_DIR),
+        _ => keepword::sysdir::resolve(cli.dir.clone()),
     };
     // Before the runtime starts any threads.
-    let result = keepword_node::sysdir::become_owner(&dir).and_then(|()| {
+    let result = keepword::sysdir::become_owner(&dir).and_then(|()| {
         tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(run(cli, dir)))
@@ -327,7 +327,7 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             if asn.is_none() {
                 println!(
                     "hint: set vantage.asn and vantage.country in {} before joining a network",
-                    dir.join(keepword_node::config::CONFIG_FILE).display()
+                    dir.join(keepword::config::CONFIG_FILE).display()
                 );
             }
         }
@@ -381,8 +381,8 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             };
             let mut report = Node::verify_bundle(&b);
             if let Some(esplora) = esplora {
-                let http = keepword_node::httpc::Http::new(false, false)?;
-                keepword_node::anchor::verify_anchor_online(&http, &esplora, &b, &mut report).await;
+                let http = keepword::httpc::Http::new(false, false)?;
+                keepword::anchor::verify_anchor_online(&http, &esplora, &b, &mut report).await;
             }
             if cli.json {
                 print_json(
@@ -549,10 +549,10 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                 WatchCmd::Run { once } => {
                     let node = Arc::new(node);
                     if once {
-                        keepword_node::web::run_due(&node, |line| println!("{line}")).await?;
+                        keepword::web::run_due(&node, |line| println!("{line}")).await?;
                     } else {
                         tokio::select! {
-                            r = keepword_node::web::scheduler(node.clone(), |line| println!("{line}")) => r?,
+                            r = keepword::web::scheduler(node.clone(), |line| println!("{line}")) => r?,
                             _ = tokio::signal::ctrl_c() => eprintln!("stopping"),
                         }
                     }
@@ -611,12 +611,12 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             let ui = tokio::net::TcpListener::bind(&addr).await?;
             eprintln!("web UI on http://{addr}/");
             let mut tasks = tokio::task::JoinSet::new();
-            let ui_app = keepword_node::web::router(node.clone());
+            let ui_app = keepword::web::router(node.clone());
             tasks.spawn(async move { axum::serve(ui, ui_app).await.map_err(anyhow::Error::from) });
             if let Some(api_addr) = api_addr {
                 let api = tokio::net::TcpListener::bind(&api_addr).await?;
                 eprintln!("peer API on http://{api_addr}/v1/");
-                let app = keepword_node::api::router(node.clone());
+                let app = keepword::api::router(node.clone());
                 tasks.spawn(async move {
                     axum::serve(
                         api,
@@ -629,19 +629,19 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             if watch {
                 let n = node.clone();
                 tasks.spawn(async move {
-                    keepword_node::web::scheduler(n, |line| eprintln!("{line}")).await
+                    keepword::web::scheduler(n, |line| eprintln!("{line}")).await
                 });
             }
             if node.config.network.endpoint.is_some() || !node.config.network.peers.is_empty() {
                 let n = node.clone();
                 tasks.spawn(async move {
-                    keepword_node::daemon::federation_loop(n, |l| eprintln!("{l}")).await
+                    keepword::daemon::federation_loop(n, |l| eprintln!("{l}")).await
                 });
             }
             if anchor {
                 let n = node.clone();
                 tasks.spawn(async move {
-                    keepword_node::daemon::anchor_loop(n, |l| eprintln!("{l}")).await
+                    keepword::daemon::anchor_loop(n, |l| eprintln!("{l}")).await
                 });
             }
             tokio::select! {
@@ -1095,7 +1095,7 @@ fn status_warnings(node: &Node, located: bool) -> Result<Vec<String>> {
     Ok(w)
 }
 
-fn print_verdict(v: &keepword_node::consensus::VerdictView) {
+fn print_verdict(v: &keepword::consensus::VerdictView) {
     use keepword_core::quorum::Verdict;
     println!("{}  ({} recent attestations)", v.url, v.considered);
     match &v.evaluation.verdict {

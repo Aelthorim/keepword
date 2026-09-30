@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 keepword-core = { path = "../keepword-core" }
 keepword-capture = { path = "../keepword-capture" }
-keepword-node = { path = "../keepword-node" }
+keepword = { path = "../keepword" }
 
 tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7", features = ["mozilla-certs"] }
 

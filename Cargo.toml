@@ -5,7 +5,7 @@ members = [
     "crates/keepword-normalize",
     "crates/keepword-capture",
     "crates/keepword-store",
-    "crates/keepword-node",
+    "crates/keepword",
 ]
 # Its own workspace; see crates/keepword-tlsn/Cargo.toml.
 exclude = ["crates/keepword-tlsn"]

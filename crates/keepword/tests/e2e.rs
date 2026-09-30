@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use keepword_core::bundle::{Bundle, Content, Status};
-use keepword_node::Node;
-use keepword_node::config::Config;
+use keepword::Node;
+use keepword::config::Config;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
