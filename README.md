@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Aelthorim/keepword/releases/latest"><img src="https://img.shields.io/github/v/release/Aelthorim/keepword?label=release&color=ffb020" alt="Latest release"></a>
-  <a href="https://github.com/Aelthorim/keepword/actions/workflows/ci.yml"><img src="https://github.com/Aelthorim/keepword/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/keepword-net/keepword/releases/latest"><img src="https://img.shields.io/github/v/release/keepword-net/keepword?label=release&color=ffb020" alt="Latest release"></a>
+  <a href="https://github.com/keepword-net/keepword/actions/workflows/ci.yml"><img src="https://github.com/keepword-net/keepword/actions/workflows/ci.yml/badge.svg" alt="Tests"></a>
   <img src="https://img.shields.io/badge/written%20in-Rust-dea584" alt="Written in Rust">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/network-early%20days-8b7bff" alt="Network: early days">
@@ -201,7 +201,7 @@ The design, threat model and formats are in [docs/DESIGN.md](docs/DESIGN.md).
 On a server (Debian, Ubuntu, Fedora, RHEL-likes, Arch, openSUSE, Alpine):
 
 ```sh
-git clone https://github.com/aelthorim/keepword.git && cd keepword
+git clone https://github.com/keepword-net/keepword.git && cd keepword
 sudo sh scripts/install.sh --domain witness.example.org --caddy
 ```
 
@@ -209,7 +209,7 @@ This builds Keepword, creates a sandboxed `keepword` service with its own user,
 fetches the IP-to-ASN table and refreshes it weekly, detects the node's
 network, and puts the peer API behind Caddy with automatic TLS. Re-run it to
 upgrade. Prebuilt static Linux binaries of the `keepword` command (x86_64 and
-arm64) are attached to each [release](https://github.com/Aelthorim/keepword/releases);
+arm64) are attached to each [release](https://github.com/keepword-net/keepword/releases);
 changes are listed in [CHANGELOG.md](CHANGELOG.md). There is also a
 container image (`Dockerfile`,
 `packaging/docker/compose.yaml`). Both are described in

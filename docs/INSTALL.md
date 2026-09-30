@@ -11,7 +11,7 @@ There are two supported ways to run a node in production:
 ## Installer
 
 ```sh
-git clone https://github.com/aelthorim/keepword.git
+git clone https://github.com/keepword-net/keepword.git
 cd keepword
 sudo sh scripts/install.sh --domain witness.example.org --caddy
 ```

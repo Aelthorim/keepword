@@ -12,7 +12,7 @@
 
 set -eu
 
-REPO_URL="https://github.com/aelthorim/keepword.git"
+REPO_URL="https://github.com/keepword-net/keepword.git"
 REPO_REF="main"
 PREFIX="/usr/local"
 DATA_DIR="/var/lib/keepword"
@@ -74,7 +74,7 @@ Features:
 
 Installation:
   --source DIR          Build from a local checkout
-  --repo URL            Git repository (default: aelthorim/keepword on GitHub)
+  --repo URL            Git repository (default: keepword-net/keepword on GitHub)
   --ref REF             Branch or tag (default: main)
   --prefix DIR          Binary prefix (default: /usr/local)
   --data-dir DIR        Data directory (default: /var/lib/keepword)
@@ -591,7 +591,7 @@ UMask=0027"
     cat >/etc/systemd/system/keepword.service <<EOF
 [Unit]
 Description=Keepword node
-Documentation=https://github.com/aelthorim/keepword
+Documentation=https://github.com/keepword-net/keepword
 After=network-online.target
 Wants=network-online.target
 

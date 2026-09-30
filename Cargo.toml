@@ -15,7 +15,7 @@ version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
-repository = "https://github.com/aelthorim/keepword"
+repository = "https://github.com/keepword-net/keepword"
 
 [workspace.dependencies]
 # Published together at one version: bump these pins with it.

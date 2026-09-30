@@ -74,7 +74,7 @@ jobs:
           On a server, the installer builds from source and sets up the service:
 
           ```sh
-          git clone https://github.com/Aelthorim/keepword.git && cd keepword
+          git clone https://github.com/keepword-net/keepword.git && cd keepword
           sudo sh scripts/install.sh --domain witness.example.org --caddy
           ```
 

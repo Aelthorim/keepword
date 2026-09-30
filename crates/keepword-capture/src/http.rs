@@ -36,7 +36,7 @@ impl Default for HttpConfig {
             user_agent: concat!(
                 "Mozilla/5.0 (compatible; Keepword/",
                 env!("CARGO_PKG_VERSION"),
-                "; +https://github.com/aelthorim/keepword)"
+                "; +https://github.com/keepword-net/keepword)"
             )
             .into(),
             timeout: Duration::from_secs(30),

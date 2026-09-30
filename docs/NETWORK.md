@@ -54,7 +54,7 @@ works at all.
 ### Step 1: the first witness
 
 ```sh
-git clone https://github.com/aelthorim/keepword.git
+git clone https://github.com/keepword-net/keepword.git
 cd keepword
 sudo sh scripts/install.sh --domain w1.example.org --caddy
 ```
