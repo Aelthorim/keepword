@@ -1,28 +1,28 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/witness-core",
-    "crates/witness-normalize",
-    "crates/witness-capture",
-    "crates/witness-store",
-    "crates/witness-node",
+    "crates/keepword-core",
+    "crates/keepword-normalize",
+    "crates/keepword-capture",
+    "crates/keepword-store",
+    "crates/keepword-node",
 ]
-# Its own workspace; see crates/witness-tlsn/Cargo.toml.
-exclude = ["crates/witness-tlsn"]
+# Its own workspace; see crates/keepword-tlsn/Cargo.toml.
+exclude = ["crates/keepword-tlsn"]
 
 [workspace.package]
-version = "1.2.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
 license = "AGPL-3.0-only"
-repository = "https://github.com/aelthorim/witness"
+repository = "https://github.com/aelthorim/keepword"
 
 [workspace.dependencies]
-witness-core = { path = "crates/witness-core" }
-witness-normalize = { path = "crates/witness-normalize" }
-witness-capture = { path = "crates/witness-capture" }
-witness-store = { path = "crates/witness-store" }
+keepword-core = { path = "crates/keepword-core" }
+keepword-normalize = { path = "crates/keepword-normalize" }
+keepword-capture = { path = "crates/keepword-capture" }
+keepword-store = { path = "crates/keepword-store" }
 
 anyhow = "1"
 axum = "0.8"

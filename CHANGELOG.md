@@ -1,8 +1,59 @@
 # Changelog
 
-All notable changes to Witness. Versions follow [Semantic Versioning](https://semver.org):
-from 1.0.0 on, the evidence formats (attestations, logs, bundles) and the
-network protocol only change incompatibly in a new major version.
+All notable changes to Keepword, called Witness before 2.0.0. Versions
+follow [Semantic Versioning](https://semver.org): from 1.0.0 on, the
+evidence formats (attestations, logs, bundles) and the network protocol
+only change incompatibly in a new major version.
+
+## [2.0.0] - 2026-09-30
+
+**Witness is now Keepword.** "Witness" is a crowded name, too hard to find
+and to tell apart. Keepword turns the problem this project is about, web
+pages that don't keep their word, into a promise. "Witness" stays as the
+role: you still run a witness, witnesses still testify, and "Keepword is a
+network of independent witnesses".
+
+The whole project changes name at once, protocol included, so this is a
+clean break: 2.0.0 nodes don't federate with 1.x nodes, and 1.x logs and
+bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
+
+### Changed
+
+- **The command is `keepword`** (and `keepword-tlsn` for the TLSNotary
+  tier), and the crates are `keepword-core`, `keepword-normalize`,
+  `keepword-capture`, `keepword-store`, `keepword-node` and
+  `keepword-tlsn`. The repository is github.com/Aelthorim/keepword.
+- **Names on a node:** the data directory is `/var/lib/keepword` (or
+  `./keepword-data` for a development node, or `KEEPWORD_DIR`), the config
+  file `keepword.toml`, the service user `keepword`, the services
+  `keepword.service`, `keepword-asn-update.timer` and
+  `keepword-notary.service`, and the installer also uses `/opt/keepword`,
+  `/usr/local/lib/keepword`, `/etc/keepword/data-dir` and
+  `/etc/caddy/keepword.caddy`. The key file is still `witness.key`: it is
+  the witness's identity.
+- **Container:** the image is `keepword`, with a `keepword-data` volume, and
+  it is configured with `KEEPWORD_ASN`, `KEEPWORD_COUNTRY`,
+  `KEEPWORD_RETAIN`, `KEEPWORD_ENDPOINT`, `KEEPWORD_PEERS`,
+  `KEEPWORD_SEEDS`, `KEEPWORD_BEHIND_PROXY`, `KEEPWORD_CLIENT_IP_HEADER`
+  and `KEEPWORD_ASN_DB`.
+- **Protocol and evidence formats (incompatible):** every signing domain
+  and hash tag starts with `keepword` instead of `witness`
+  (`keepword/attestation/v2`, `keepword/tree-head/v1`,
+  `keepword url-key v1`, …), evidence bundles are `keepword-bundle/1`,
+  normalized text starts with `keepword-norm/2`, so normalized hashes
+  change too, and a WARC export's attestation record is
+  `application/vnd.keepword.attestation+json`.
+- The default User-Agent is `Mozilla/5.0 (compatible; Keepword/2.0.0;
+  +https://github.com/aelthorim/keepword)`, and peers see `keepword/2.0.0`.
+- Release archives are `keepword-vX.Y.Z-TARGET.tar.gz`. The web UI, the
+  banner and the social preview say Keepword.
+
+### Upgrading from Witness 1.x
+
+Start every node over. On each one, remove Witness with its own installer
+(`sudo sh scripts/install.sh --uninstall --purge` in a 1.x checkout), then
+install Keepword. Upgrade the default seed first: new nodes join through
+it.
 
 ## [1.2.0] - 2026-09-29
 
@@ -260,8 +311,9 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
-[1.2.0]: https://github.com/Aelthorim/witness/releases/tag/v1.2.0
-[1.1.1]: https://github.com/Aelthorim/witness/releases/tag/v1.1.1
-[1.1.0]: https://github.com/Aelthorim/witness/releases/tag/v1.1.0
-[1.0.1]: https://github.com/Aelthorim/witness/releases/tag/v1.0.1
-[1.0.0]: https://github.com/Aelthorim/witness/releases/tag/v1.0.0
+[2.0.0]: https://github.com/Aelthorim/keepword/releases/tag/v2.0.0
+[1.2.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.2.0
+[1.1.1]: https://github.com/Aelthorim/keepword/releases/tag/v1.1.1
+[1.1.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.1.0
+[1.0.1]: https://github.com/Aelthorim/keepword/releases/tag/v1.0.1
+[1.0.0]: https://github.com/Aelthorim/keepword/releases/tag/v1.0.0

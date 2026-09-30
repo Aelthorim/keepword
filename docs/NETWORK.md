@@ -1,6 +1,6 @@
-# Starting a Witness network
+# Starting a Keepword network
 
-This guide sets up a real, public Witness network: independent witnesses on
+This guide sets up a real, public Keepword network: independent witnesses on
 the internet that audit each other's logs, agree on who captures which
 page, and give verdicts that hold up because the witnesses are genuinely
 independent.
@@ -54,8 +54,8 @@ works at all.
 ### Step 1: the first witness
 
 ```sh
-git clone https://github.com/aelthorim/witness.git
-cd witness
+git clone https://github.com/aelthorim/keepword.git
+cd keepword
 sudo sh scripts/install.sh --domain w1.example.org --caddy
 ```
 
@@ -87,13 +87,13 @@ joins when one of them is down.
 After two or three minutes (a few sync rounds), on any witness:
 
 ```sh
-witness net peers        # as root or with sudo
-witness net status
+keepword net peers        # as root or with sudo
+keepword net status
 ```
 
-`witness net peers` should list every other witness with a log size, a
+`keepword net peers` should list every other witness with a log size, a
 recent `last sync`, no error, and a location like
-`AS16276 FR (seen directly)`. `witness net status` should show:
+`AS16276 FR (seen directly)`. `keepword net status` should show:
 
 - `location` with an ASN and observers, not `not corroborated`;
 - `candidates` equal to the number of witnesses;
@@ -107,15 +107,15 @@ recent `last sync`, no error, and a location like
 On any witness, ask the network to watch a page that doesn't change often:
 
 ```sh
-witness request https://www.example.org/ --every 10m --for 1day
+keepword request https://www.example.org/ --every 10m --for 1day
 ```
 
 Within a sync round, the assigned witnesses show it in
-`witness watch list`. After about ten minutes they have all captured it,
+`keepword watch list`. After about ten minutes they have all captured it,
 and on any witness:
 
 ```sh
-witness verdict https://www.example.org/
+keepword verdict https://www.example.org/
 # AGREED by 3 witnesses in 3 independent networks: ...
 ```
 
@@ -123,18 +123,18 @@ Then check that the evidence stands on its own. Export a bundle and verify
 it on a different machine:
 
 ```sh
-witness export https://www.example.org/ > bundle.json   # on a witness that captured it
-witness verify --bundle bundle.json                           # anywhere
+keepword export https://www.example.org/ > bundle.json   # on a witness that captured it
+keepword verify --bundle bundle.json                           # anywhere
 ```
 
 Withdraw the test request when you're done:
-`witness request https://www.example.org/ --cancel`.
+`keepword request https://www.example.org/ --cancel`.
 
 ### Step 5: make joining one command
 
 Put the endpoints of two or three founding witnesses, ideally run by
 different people, into `DEFAULT_SEEDS` in
-`crates/witness-node/src/config.rs`. Every node built from the code then
+`crates/keepword-node/src/config.rs`. Every node built from the code then
 dials them when it knows few peers, so a newcomer joins with just:
 
 ```sh
@@ -145,8 +145,8 @@ sudo sh scripts/install.sh --domain their.domain --caddy
 node knows enough peers, and never on a network with
 `network.allow_private_peers`, so a LAN test cluster can't wander into the
 public network. To run a **separate** network, set
-`witness config set network.seeds false` on every witness (the installer's
-`--no-seeds`, the container's `WITNESS_SEEDS=0`) and bootstrap it with
+`keepword config set network.seeds false` on every witness (the installer's
+`--no-seeds`, the container's `KEEPWORD_SEEDS=0`) and bootstrap it with
 `--peer`. Do the same for test installs and CI, or they join the public
 network and linger in its peer tables.
 
@@ -184,7 +184,7 @@ seen from there can be confirmed. Until then disagreements stay
 `DISPUTED`, and no split alert is raised.
 
 **Never enable these on a public witness.** They exist for test networks,
-and `witness net status` warns about them: `quorum.trust_self_reported`,
+and `keepword net status` warns about them: `quorum.trust_self_reported`,
 `beacon.allow_insecure_seed`, `network.allow_private_peers`.
 
 ## 5. Each operator's own choices
@@ -200,8 +200,8 @@ and `witness net status` warns about them: `quorum.trust_self_reported`,
 | `network.client_ip_header` | Behind a CDN: the header your reverse proxy puts the client address in, e.g. `X-Real-IP`. Without it, the node places every peer in the CDN's network (INSTALL.md). |
 | `network.api_requests_per_minute` | Requests per minute the public API answers from one address, in bursts of as many (default 600, 0 = off). Behind a reverse proxy it needs `network.trust_forwarded_for` to see real addresses; without it, private and local addresses aren't limited. |
 
-Change settings with `witness config set KEY VALUE`, then
-`sudo systemctl restart witness`.
+Change settings with `keepword config set KEY VALUE`, then
+`sudo systemctl restart keepword`.
 
 ## 6. Resources
 
@@ -225,18 +225,18 @@ network.
 - **Upgrades:** `git pull` and re-run the installer with the same options.
   Keys and data are kept. Nodes skip message types they don't know, so
   witnesses can upgrade one at a time, but upgrade within days.
-- **Backups:** `/var/lib/witness/witness.key` is the witness's identity. A
+- **Backups:** `/var/lib/keepword/witness.key` is the witness's identity. A
   lost key means a new witness, and the old log can never be extended.
-- **Monitoring:** `witness net status` (warnings), `witness alerts`,
-  `journalctl -u witness`. A peer that keeps failing shows its error in
-  `witness net peers`.
+- **Monitoring:** `keepword net status` (warnings), `keepword alerts`,
+  `journalctl -u keepword`. A peer that keeps failing shows its error in
+  `keepword net peers`.
 - **Automatic:** syncing every minute, Bitcoin anchoring every hour, the
   IP-to-ASN table refresh every week.
 - **Retiring a witness:** export the bundles that matter first
-  (`witness export`); bundles verify on their own, but nobody else keeps a
+  (`keepword export`); bundles verify on their own, but nobody else keeps a
   full copy of a witness's log. Keep the key. Peers retry it every ten minutes, stop
   assigning it requests after a week, and drop it first when their peer
-  table fills up. `witness net remove-peer KEY` drops it at once.
+  table fills up. `keepword net remove-peer KEY` drops it at once.
 
 ## 8. Moving on from a test cluster
 
@@ -250,20 +250,20 @@ sudo sh scripts/install.sh --domain wN.example.org --caddy --peer https://w1.exa
 ```
 
 To keep a test witness's key instead, undo every test setting
-(`witness config unset quorum.trust_self_reported`, and likewise
+(`keepword config unset quorum.trust_self_reported`, and likewise
 `network.max_per_country`, `quorum.min_asns`, `quorum.min_dissent_asns`,
 `network.allow_private_peers`, `vantage.asn`), set its public endpoint and
-peers, remove the old LAN peers with `witness net remove-peer`, and
+peers, remove the old LAN peers with `keepword net remove-peer`, and
 restart it.
 
 ## 9. Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `witness net peers` is empty | No `network.peers`, or the bootstrap peer isn't reachable: `curl https://PEER/v1/descriptor` from this server. |
+| `keepword net peers` is empty | No `network.peers`, or the bootstrap peer isn't reachable: `curl https://PEER/v1/descriptor` from this server. |
 | A peer shows `error: ... not a public address` | Its endpoint is a private IP. Public witnesses need public endpoints. |
 | `location not corroborated` | Fewer than 2 other witnesses have received pushes from this one yet. Wait a few rounds, and check that its peers can reach it. |
-| Every location is `unknown` | No IP-to-ASN table: `witness config get quorum.asn_db`, and check the `witness-asn-update` timer. |
+| Every location is `unknown` | No IP-to-ASN table: `keepword config get quorum.asn_db`, and check the `keepword-asn-update` timer. |
 | Peers all show the same ASN | They're at the same provider, or a proxy or CDN in front of the API hides their addresses. AS13335 is Cloudflare: have the proxy pass on the client address (`network.client_ip_header`, INSTALL.md). Otherwise the proxy must pass real addresses (`trust_forwarded_for`). |
 | `no seed: no drand beacon` | Nobody can reach drand yet. Assignment waits for the day's beacon. |
 | Verdicts stay `INSUFFICIENT` | Fewer than 3 ASNs among the witnesses assigned to the URL, or their captures fall outside one 10-minute window. |

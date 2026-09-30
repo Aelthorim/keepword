@@ -28,17 +28,17 @@ jobs:
           key: ${{ matrix.target }}
       - name: Check the tag matches the crate version
         run: |
-          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "witness-node") | .version')
+          version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "keepword-node") | .version')
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != version $version"; exit 1; }
       - name: Install zig and cargo-zigbuild
         run: pip install ziglang==0.13.0 cargo-zigbuild
       - name: Build
-        run: cargo zigbuild --release --locked -p witness-node --target ${{ matrix.target }}
+        run: cargo zigbuild --release --locked -p keepword-node --target ${{ matrix.target }}
       - name: Package
         run: |
-          name=witness-${GITHUB_REF_NAME}-${{ matrix.target }}
+          name=keepword-${GITHUB_REF_NAME}-${{ matrix.target }}
           mkdir -p "dist/$name"
-          cp target/${{ matrix.target }}/release/witness "dist/$name/"
+          cp target/${{ matrix.target }}/release/keepword "dist/$name/"
           cp LICENSE README.md CHANGELOG.md "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
@@ -74,11 +74,11 @@ jobs:
           On a server, the installer builds from source and sets up the service:
 
           ```sh
-          git clone https://github.com/Aelthorim/witness.git && cd witness
+          git clone https://github.com/Aelthorim/keepword.git && cd keepword
           sudo sh scripts/install.sh --domain witness.example.org --caddy
           ```
 
-          The binaries below are static Linux builds of the `witness` command
+          The binaries below are static Linux builds of the `keepword` command
           (without headless rendering). Check them against `SHA256SUMS`.
           EOF
       - name: Publish
@@ -86,4 +86,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS \
-            --title "Witness $GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+            --title "Keepword $GITHUB_REF_NAME" --notes-file notes.md --verify-tag

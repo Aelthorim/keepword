@@ -1,7 +1,7 @@
 #!/bin/sh
-# Witness production installer.
+# Keepword production installer.
 #
-# Builds Witness from source and sets it up as a hardened system service:
+# Builds Keepword from source and sets it up as a hardened system service:
 # a dedicated user, a data directory, an IP-to-ASN table that refreshes
 # weekly, systemd (or OpenRC) units, and optionally a TLS reverse proxy
 # (Caddy) and the TLSNotary notary service.
@@ -12,12 +12,12 @@
 
 set -eu
 
-REPO_URL="https://github.com/aelthorim/witness.git"
+REPO_URL="https://github.com/aelthorim/keepword.git"
 REPO_REF="main"
 PREFIX="/usr/local"
-DATA_DIR="/var/lib/witness"
-OPT_DIR="/opt/witness"
-SVC_USER="witness"
+DATA_DIR="/var/lib/keepword"
+OPT_DIR="/opt/keepword"
+SVC_USER="keepword"
 UI_ADDR="127.0.0.1:8480"
 API_ADDR="127.0.0.1:8481"
 NOTARY_ADDR="0.0.0.0:8482"
@@ -74,10 +74,10 @@ Features:
 
 Installation:
   --source DIR          Build from a local checkout
-  --repo URL            Git repository (default: aelthorim/witness on GitHub)
+  --repo URL            Git repository (default: aelthorim/keepword on GitHub)
   --ref REF             Branch or tag (default: main)
   --prefix DIR          Binary prefix (default: /usr/local)
-  --data-dir DIR        Data directory (default: /var/lib/witness)
+  --data-dir DIR        Data directory (default: /var/lib/keepword)
   --no-start            Install and configure, but don't start services
   --init SYSTEM         systemd | openrc | none (default: detect); set it when
                         installing into an image or chroot
@@ -150,7 +150,7 @@ case "$RETAIN" in ''|full|normalized|none) ;; *) die "--retain must be full, nor
 case "$INIT" in ''|systemd|openrc|none) ;; *) die "--init must be systemd, openrc or none" ;; esac
 
 BIN="$PREFIX/bin"
-LIBEXEC="$PREFIX/lib/witness"
+LIBEXEC="$PREFIX/lib/keepword"
 if [ -n "$DOMAIN" ] && [ -z "$ENDPOINT" ]; then ENDPOINT="https://$DOMAIN"; fi
 if [ -n "$PUBLIC_API" ]; then API_ADDR=$PUBLIC_API; fi
 
@@ -183,7 +183,7 @@ if [ -r /etc/os-release ]; then
 fi
 
 # Run a command as the service user.
-as_witness() {
+as_keepword() {
     if command -v runuser >/dev/null 2>&1; then
         runuser -u "$SVC_USER" -- "$@"
     elif command -v su-exec >/dev/null 2>&1; then
@@ -195,7 +195,7 @@ as_witness() {
     fi
 }
 
-witness() { as_witness env WITNESS_DIR="$DATA_DIR" HOME="$DATA_DIR" "$BIN/witness" "$@"; }
+keepword() { as_keepword env KEEPWORD_DIR="$DATA_DIR" HOME="$DATA_DIR" "$BIN/keepword" "$@"; }
 
 confirm() {
     [ "$YES" -eq 1 ] && return 0
@@ -229,28 +229,28 @@ svc() { # svc enable|start|restart|stop|disable NAME
 # --------------------------------------------------------------- uninstall
 
 if [ "$UNINSTALL" -eq 1 ]; then
-    step "Uninstalling Witness"
+    step "Uninstalling Keepword"
     if [ "$PURGE" -eq 1 ]; then
         confirm "This deletes $DATA_DIR, including the witness key and its log. Continue?"
     fi
-    for s in witness-notary witness witness-asn-update.timer; do
+    for s in keepword-notary keepword keepword-asn-update.timer; do
         svc stop "$s"; svc disable "$s"
     done
-    rm -f /etc/systemd/system/witness.service /etc/systemd/system/witness-notary.service \
-        /etc/systemd/system/witness-asn-update.service /etc/systemd/system/witness-asn-update.timer \
-        /etc/init.d/witness /etc/init.d/witness-notary /etc/periodic/weekly/witness-asn-update \
-        /etc/cron.weekly/witness-asn-update
+    rm -f /etc/systemd/system/keepword.service /etc/systemd/system/keepword-notary.service \
+        /etc/systemd/system/keepword-asn-update.service /etc/systemd/system/keepword-asn-update.timer \
+        /etc/init.d/keepword /etc/init.d/keepword-notary /etc/periodic/weekly/keepword-asn-update \
+        /etc/cron.weekly/keepword-asn-update
     [ "$LIVE_INIT" -eq 0 ] || [ "$INIT" != "systemd" ] || systemctl daemon-reload
-    rm -f "$BIN/witness" "$BIN/witness-tlsn" /etc/witness/data-dir
-    rmdir /etc/witness 2>/dev/null || true
+    rm -f "$BIN/keepword" "$BIN/keepword-tlsn" /etc/keepword/data-dir
+    rmdir /etc/keepword 2>/dev/null || true
     rm -rf "$LIBEXEC"
-    if [ -f /etc/caddy/witness.caddy ]; then
-        rm -f /etc/caddy/witness.caddy
-        sed -i '/^import \/etc\/caddy\/witness.caddy$/d' /etc/caddy/Caddyfile 2>/dev/null || true
+    if [ -f /etc/caddy/keepword.caddy ]; then
+        rm -f /etc/caddy/keepword.caddy
+        sed -i '/^import \/etc\/caddy\/keepword.caddy$/d' /etc/caddy/Caddyfile 2>/dev/null || true
         svc reload caddy 2>/dev/null || true
     fi
     if [ "$PURGE" -eq 1 ]; then
-        rm -rf "$DATA_DIR" "$OPT_DIR" /var/log/witness
+        rm -rf "$DATA_DIR" "$OPT_DIR" /var/log/keepword
         if id "$SVC_USER" >/dev/null 2>&1; then
             # Anything still running as the user (started by hand) would
             # block its removal.
@@ -270,9 +270,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
 fi
 
 UPGRADE=0
-[ ! -f "$DATA_DIR/witness.toml" ] || UPGRADE=1
+[ ! -f "$DATA_DIR/keepword.toml" ] || UPGRADE=1
 
-step "Witness installer"
+step "Keepword installer"
 info "system:   $DISTRO, packages via ${PKG:-none}, services via $INIT"
 info "data:     $DATA_DIR$( [ "$UPGRADE" -eq 1 ] && printf ' (existing node: upgrade in place)')"
 info "binaries: $BIN"
@@ -392,12 +392,12 @@ step "Getting the source"
 if [ -z "$SOURCE" ]; then
     here=""
     if cd "$(dirname "$0")" 2>/dev/null; then here=$(pwd); cd - >/dev/null; fi
-    if [ -n "$here" ] && [ -f "$here/../crates/witness-node/Cargo.toml" ]; then
+    if [ -n "$here" ] && [ -f "$here/../crates/keepword-node/Cargo.toml" ]; then
         SOURCE=$(cd "$here/.." && pwd)
     fi
 fi
 if [ -n "$SOURCE" ]; then
-    [ -f "$SOURCE/crates/witness-node/Cargo.toml" ] || die "$SOURCE is not a Witness checkout"
+    [ -f "$SOURCE/crates/keepword-node/Cargo.toml" ] || die "$SOURCE is not a Keepword checkout"
     SOURCE=$(cd "$SOURCE" && pwd)
     info "building from $SOURCE"
 else
@@ -420,16 +420,16 @@ mkdir -p "$CARGO_TARGET_DIR"
 features=""
 [ "$RENDER" -eq 0 ] || features="--features render"
 # shellcheck disable=SC2086
-(cd "$SOURCE" && "$CARGO" build --release --locked -q -p witness-node $features)
+(cd "$SOURCE" && "$CARGO" build --release --locked -q -p keepword-node $features)
 install -d "$BIN"
-install -m 0755 "$CARGO_TARGET_DIR/release/witness" "$BIN/witness.new"
-mv -f "$BIN/witness.new" "$BIN/witness"
-info "installed $BIN/witness ($("$BIN/witness" --version))"
+install -m 0755 "$CARGO_TARGET_DIR/release/keepword" "$BIN/keepword.new"
+mv -f "$BIN/keepword.new" "$BIN/keepword"
+info "installed $BIN/keepword ($("$BIN/keepword" --version))"
 if [ "$NOTARY" -eq 1 ]; then
-    (cd "$SOURCE/crates/witness-tlsn" && CARGO_TARGET_DIR="$OPT_DIR/target-tlsn" "$CARGO" build --release --locked -q)
-    install -m 0755 "$OPT_DIR/target-tlsn/release/witness-tlsn" "$BIN/witness-tlsn.new"
-    mv -f "$BIN/witness-tlsn.new" "$BIN/witness-tlsn"
-    info "installed $BIN/witness-tlsn"
+    (cd "$SOURCE/crates/keepword-tlsn" && CARGO_TARGET_DIR="$OPT_DIR/target-tlsn" "$CARGO" build --release --locked -q)
+    install -m 0755 "$OPT_DIR/target-tlsn/release/keepword-tlsn" "$BIN/keepword-tlsn.new"
+    mv -f "$BIN/keepword-tlsn.new" "$BIN/keepword-tlsn"
+    info "installed $BIN/keepword-tlsn"
 fi
 
 # -------------------------------------------------------------- user, data
@@ -439,21 +439,21 @@ if ! id "$SVC_USER" >/dev/null 2>&1; then
     nologin=$(command -v nologin || printf '/sbin/nologin')
     if command -v useradd >/dev/null 2>&1; then
         useradd --system --user-group --home-dir "$DATA_DIR" --no-create-home \
-            --shell "$nologin" --comment "Witness node" "$SVC_USER"
+            --shell "$nologin" --comment "Keepword node" "$SVC_USER"
     else
         addgroup -S "$SVC_USER"
-        adduser -S -D -H -h "$DATA_DIR" -s "$nologin" -G "$SVC_USER" -g "Witness node" "$SVC_USER"
+        adduser -S -D -H -h "$DATA_DIR" -s "$nologin" -G "$SVC_USER" -g "Keepword node" "$SVC_USER"
     fi
     info "created system user $SVC_USER"
 fi
 install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$DATA_DIR"
-# The CLI finds /var/lib/witness by itself; anywhere else is recorded here.
-if [ "$DATA_DIR" = /var/lib/witness ]; then
-    rm -f /etc/witness/data-dir
-    rmdir /etc/witness 2>/dev/null || true
+# The CLI finds /var/lib/keepword by itself; anywhere else is recorded here.
+if [ "$DATA_DIR" = /var/lib/keepword ]; then
+    rm -f /etc/keepword/data-dir
+    rmdir /etc/keepword 2>/dev/null || true
 else
-    install -d /etc/witness
-    printf '%s\n' "$DATA_DIR" >/etc/witness/data-dir
+    install -d /etc/keepword
+    printf '%s\n' "$DATA_DIR" >/etc/keepword/data-dir
 fi
 
 # Helper for refreshing the IP-to-ASN table, used now and by the timer.
@@ -478,38 +478,38 @@ if [ "$UPGRADE" -eq 0 ]; then
     set -- --retain "${RETAIN:-full}"
     [ -z "$ASN" ] || set -- "$@" --asn "$ASN"
     [ -z "$COUNTRY" ] || set -- "$@" --country "$COUNTRY"
-    witness init "$@" | sed 's/^/    /'
+    keepword init "$@" | sed 's/^/    /'
 else
-    info "keeping the existing node and key ($(witness id | head -n1))"
-    [ -z "$RETAIN" ] || witness config set content.retain "$RETAIN"
-    [ -z "$ASN" ] || witness config set vantage.asn "$ASN"
-    [ -z "$COUNTRY" ] || witness config set vantage.country "$COUNTRY"
+    info "keeping the existing node and key ($(keepword id | head -n1))"
+    [ -z "$RETAIN" ] || keepword config set content.retain "$RETAIN"
+    [ -z "$ASN" ] || keepword config set vantage.asn "$ASN"
+    [ -z "$COUNTRY" ] || keepword config set vantage.country "$COUNTRY"
 fi
 
 # --------------------------------------------------------------- ASN table
 
 if [ "$ASN_DB" -eq 1 ]; then
     step "Fetching the IP-to-ASN table"
-    if as_witness "$LIBEXEC/update-asn-db" "$DATA_DIR"; then
-        witness config set quorum.asn_db "$DATA_DIR/ip2asn-combined.tsv"
+    if as_keepword "$LIBEXEC/update-asn-db" "$DATA_DIR"; then
+        keepword config set quorum.asn_db "$DATA_DIR/ip2asn-combined.tsv"
         info "$(wc -l <"$DATA_DIR/ip2asn-combined.tsv") ranges; refreshed weekly"
     else
         warn "could not download $ASN_DB_URL; verdicts stay 'insufficient' until"
-        warn "you run: $LIBEXEC/update-asn-db && witness config set quorum.asn_db $DATA_DIR/ip2asn-combined.tsv"
+        warn "you run: $LIBEXEC/update-asn-db && keepword config set quorum.asn_db $DATA_DIR/ip2asn-combined.tsv"
     fi
 fi
 
-if [ "$DETECT" -eq 1 ] && [ -z "$ASN" ] && [ -z "$(witness config get vantage.asn)" ] \
+if [ "$DETECT" -eq 1 ] && [ -z "$ASN" ] && [ -z "$(keepword config get vantage.asn)" ] \
     && [ -f "$DATA_DIR/ip2asn-combined.tsv" ]; then
     step "Detecting this node's network"
     ip=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
-    if [ -n "$ip" ] && found=$(witness net lookup "$ip" 2>/dev/null); then
+    if [ -n "$ip" ] && found=$(keepword net lookup "$ip" 2>/dev/null); then
         det_asn=${found% *}; det_cc=${found#* }
-        witness config set vantage.asn "$det_asn"
-        case "$det_cc" in [A-Z][A-Z]) witness config set vantage.country "$det_cc" ;; esac
+        keepword config set vantage.asn "$det_asn"
+        case "$det_cc" in [A-Z][A-Z]) keepword config set vantage.country "$det_cc" ;; esac
         info "public IP $ip is in AS$det_asn ($det_cc)"
     else
-        warn "could not detect the ASN; set it with: witness config set vantage.asn N"
+        warn "could not detect the ASN; set it with: keepword config set vantage.asn N"
     fi
 fi
 
@@ -517,25 +517,25 @@ fi
 
 step "Configuring the network"
 if [ -n "$ENDPOINT" ]; then
-    witness config set network.endpoint "$ENDPOINT"
+    keepword config set network.endpoint "$ENDPOINT"
     info "advertising $ENDPOINT"
 fi
 if [ -n "$DOMAIN" ]; then
     # Behind our own reverse proxy the client address arrives in
     # X-Forwarded-For; observation receipts depend on it being right.
-    witness config set network.trust_forwarded_for true
+    keepword config set network.trust_forwarded_for true
 fi
 if [ -n "$PEERS" ]; then
     list=""
     for p in $PEERS; do list="$list${list:+, }\"$p\""; done
-    witness config set network.peers "[$list]"
+    keepword config set network.peers "[$list]"
     info "bootstrap peers:$PEERS"
 fi
 if [ "$SEEDS" -eq 0 ]; then
-    witness config set network.seeds false
+    keepword config set network.seeds false
     info "not joining through the default seeds"
 fi
-if [ -z "$(witness config get network.endpoint)" ]; then
+if [ -z "$(keepword config get network.endpoint)" ]; then
     if [ -n "$PUBLIC_API" ]; then
         warn "the API listens on $PUBLIC_API, but no endpoint is advertised, so peers"
         warn "can't mirror this node and it is never assigned requests. Re-run with"
@@ -543,14 +543,14 @@ if [ -z "$(witness config get network.endpoint)" ]; then
         warn "  --endpoint http://this-node-ip:${PUBLIC_API##*:}   (private test network)"
     elif [ -z "$PEERS" ] && [ "$UPGRADE" -eq 0 ]; then
         info "standalone node (no endpoint or peers); join a network later with"
-        info "  witness config set network.endpoint https://your.domain"
-        info "  witness config set network.peers '[\"https://a.peer.example\"]'"
+        info "  keepword config set network.endpoint https://your.domain"
+        info "  keepword config set network.peers '[\"https://a.peer.example\"]'"
     fi
 fi
 if [ "$RENDER" -eq 1 ]; then
     for c in chromium chromium-browser google-chrome; do
         if path=$(command -v "$c" 2>/dev/null); then
-            witness config set capture.chrome "$path"
+            keepword config set capture.chrome "$path"
             info "headless capture uses $path"
             break
         fi
@@ -588,10 +588,10 @@ SystemCallFilter=@system-service
 CapabilityBoundingSet=
 UMask=0027"
 
-    cat >/etc/systemd/system/witness.service <<EOF
+    cat >/etc/systemd/system/keepword.service <<EOF
 [Unit]
-Description=Witness node
-Documentation=https://github.com/aelthorim/witness
+Description=Keepword node
+Documentation=https://github.com/aelthorim/keepword
 After=network-online.target
 Wants=network-online.target
 
@@ -599,9 +599,9 @@ Wants=network-online.target
 Type=simple
 User=$SVC_USER
 Group=$SVC_USER
-Environment=WITNESS_DIR=$DATA_DIR
+Environment=KEEPWORD_DIR=$DATA_DIR
 Environment=HOME=$DATA_DIR
-ExecStart=$BIN/witness $serve_args
+ExecStart=$BIN/keepword $serve_args
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
@@ -612,9 +612,9 @@ $hardening
 WantedBy=multi-user.target
 EOF
 
-    cat >/etc/systemd/system/witness-asn-update.service <<EOF
+    cat >/etc/systemd/system/keepword-asn-update.service <<EOF
 [Unit]
-Description=Refresh the Witness IP-to-ASN table
+Description=Refresh the Keepword IP-to-ASN table
 After=network-online.target
 Wants=network-online.target
 
@@ -624,14 +624,14 @@ User=$SVC_USER
 Group=$SVC_USER
 ExecStart=$LIBEXEC/update-asn-db $DATA_DIR
 # The node loads the table at start-up.
-ExecStartPost=+/bin/systemctl try-restart witness.service
+ExecStartPost=+/bin/systemctl try-restart keepword.service
 MemoryDenyWriteExecute=yes
 $hardening
 EOF
 
-    cat >/etc/systemd/system/witness-asn-update.timer <<'EOF'
+    cat >/etc/systemd/system/keepword-asn-update.timer <<'EOF'
 [Unit]
-Description=Weekly refresh of the Witness IP-to-ASN table
+Description=Weekly refresh of the Keepword IP-to-ASN table
 
 [Timer]
 OnCalendar=weekly
@@ -643,19 +643,19 @@ WantedBy=timers.target
 EOF
 
     if [ "$NOTARY" -eq 1 ]; then
-        cat >/etc/systemd/system/witness-notary.service <<EOF
+        cat >/etc/systemd/system/keepword-notary.service <<EOF
 [Unit]
-Description=Witness TLSNotary notary
-After=network-online.target witness.service
+Description=Keepword TLSNotary notary
+After=network-online.target keepword.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=$SVC_USER
 Group=$SVC_USER
-Environment=WITNESS_DIR=$DATA_DIR
+Environment=KEEPWORD_DIR=$DATA_DIR
 Environment=HOME=$DATA_DIR
-ExecStart=$BIN/witness-tlsn serve --addr $NOTARY_ADDR
+ExecStart=$BIN/keepword-tlsn serve --addr $NOTARY_ADDR
 Restart=on-failure
 RestartSec=5
 MemoryDenyWriteExecute=yes
@@ -669,81 +669,81 @@ EOF
 }
 
 write_openrc() {
-    install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/log/witness
-    cat >/etc/init.d/witness <<EOF
+    install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" /var/log/keepword
+    cat >/etc/init.d/keepword <<EOF
 #!/sbin/openrc-run
-name="witness"
-description="Witness node"
-command="$BIN/witness"
+name="keepword"
+description="Keepword node"
+command="$BIN/keepword"
 command_args="$serve_args"
 command_user="$SVC_USER:$SVC_USER"
 supervisor="supervise-daemon"
 respawn_delay=5
-output_log="/var/log/witness/witness.log"
-error_log="/var/log/witness/witness.log"
-export WITNESS_DIR="$DATA_DIR"
+output_log="/var/log/keepword/keepword.log"
+error_log="/var/log/keepword/keepword.log"
+export KEEPWORD_DIR="$DATA_DIR"
 export HOME="$DATA_DIR"
 
 depend() {
     need net
 }
 EOF
-    chmod 0755 /etc/init.d/witness
+    chmod 0755 /etc/init.d/keepword
     if [ "$NOTARY" -eq 1 ]; then
-        cat >/etc/init.d/witness-notary <<EOF
+        cat >/etc/init.d/keepword-notary <<EOF
 #!/sbin/openrc-run
-name="witness-notary"
-description="Witness TLSNotary notary"
-command="$BIN/witness-tlsn"
+name="keepword-notary"
+description="Keepword TLSNotary notary"
+command="$BIN/keepword-tlsn"
 command_args="serve --addr $NOTARY_ADDR"
 command_user="$SVC_USER:$SVC_USER"
 supervisor="supervise-daemon"
-output_log="/var/log/witness/notary.log"
-error_log="/var/log/witness/notary.log"
-export WITNESS_DIR="$DATA_DIR"
+output_log="/var/log/keepword/notary.log"
+error_log="/var/log/keepword/notary.log"
+export KEEPWORD_DIR="$DATA_DIR"
 export HOME="$DATA_DIR"
 
 depend() {
     need net
-    after witness
+    after keepword
 }
 EOF
-        chmod 0755 /etc/init.d/witness-notary
+        chmod 0755 /etc/init.d/keepword-notary
     fi
     cron_dir=/etc/periodic/weekly
     [ -d "$cron_dir" ] || cron_dir=/etc/cron.weekly
     install -d "$cron_dir"
-    cat >"$cron_dir/witness-asn-update" <<EOF
+    cat >"$cron_dir/keepword-asn-update" <<EOF
 #!/bin/sh
-su-exec $SVC_USER $LIBEXEC/update-asn-db $DATA_DIR && rc-service witness restart >/dev/null
+su-exec $SVC_USER $LIBEXEC/update-asn-db $DATA_DIR && rc-service keepword restart >/dev/null
 EOF
-    chmod 0755 "$cron_dir/witness-asn-update"
+    chmod 0755 "$cron_dir/keepword-asn-update"
 }
 
 step "Installing services ($INIT)"
 case "$INIT" in
     systemd)
         write_systemd
-        svc enable witness.service
-        [ "$ASN_DB" -eq 0 ] || svc enable witness-asn-update.timer
-        [ "$NOTARY" -eq 0 ] || svc enable witness-notary.service
-        info "witness.service$( [ "$NOTARY" -eq 1 ] && printf ', witness-notary.service'), witness-asn-update.timer" ;;
+        svc enable keepword.service
+        [ "$ASN_DB" -eq 0 ] || svc enable keepword-asn-update.timer
+        [ "$NOTARY" -eq 0 ] || svc enable keepword-notary.service
+        info "keepword.service$( [ "$NOTARY" -eq 1 ] && printf ', keepword-notary.service'), keepword-asn-update.timer" ;;
     openrc)
         write_openrc
-        svc enable witness
-        [ "$NOTARY" -eq 0 ] || svc enable witness-notary
-        info "/etc/init.d/witness$( [ "$NOTARY" -eq 1 ] && printf ', /etc/init.d/witness-notary')" ;;
+        svc enable keepword
+        [ "$NOTARY" -eq 0 ] || svc enable keepword-notary
+        info "/etc/init.d/keepword$( [ "$NOTARY" -eq 1 ] && printf ', /etc/init.d/keepword-notary')" ;;
     *)
         warn "no systemd or OpenRC found; start the node yourself, e.g.:"
-        warn "  WITNESS_DIR=$DATA_DIR $BIN/witness $serve_args" ;;
+        warn "  KEEPWORD_DIR=$DATA_DIR $BIN/keepword $serve_args" ;;
 esac
 
 # ------------------------------------------------------------ reverse proxy
 
 if [ "$CADDY" -eq 1 ]; then
     step "Configuring Caddy for $DOMAIN"
-    cat >/etc/caddy/witness.caddy <<EOF
-# Managed by the Witness installer. Only the peer API is public; the web UI
+    cat >/etc/caddy/keepword.caddy <<EOF
+# Managed by the Keepword installer. Only the peer API is public; the web UI
 # stays on $UI_ADDR.
 $DOMAIN {
 	encode zstd gzip
@@ -751,12 +751,12 @@ $DOMAIN {
 		reverse_proxy $API_ADDR
 	}
 	handle {
-		respond "Witness node: see /v1/descriptor" 404
+		respond "Keepword node: see /v1/descriptor" 404
 	}
 }
 EOF
-    grep -qx 'import /etc/caddy/witness.caddy' /etc/caddy/Caddyfile 2>/dev/null \
-        || printf '\nimport /etc/caddy/witness.caddy\n' >>/etc/caddy/Caddyfile
+    grep -qx 'import /etc/caddy/keepword.caddy' /etc/caddy/Caddyfile 2>/dev/null \
+        || printf '\nimport /etc/caddy/keepword.caddy\n' >>/etc/caddy/Caddyfile
     if [ "$START" -eq 1 ]; then
         svc enable caddy
         svc restart caddy
@@ -772,9 +772,9 @@ fi
 
 if [ "$START" -eq 1 ] && [ "$INIT" != "none" ]; then
     step "Starting"
-    svc restart witness
-    [ "$ASN_DB" -eq 0 ] || [ "$INIT" != "systemd" ] || svc start witness-asn-update.timer
-    [ "$NOTARY" -eq 0 ] || svc restart witness-notary
+    svc restart keepword
+    [ "$ASN_DB" -eq 0 ] || [ "$INIT" != "systemd" ] || svc start keepword-asn-update.timer
+    [ "$NOTARY" -eq 0 ] || svc restart keepword-notary
     api_host=$API_ADDR
     case "$api_host" in 0.0.0.0:*) api_host="127.0.0.1:${api_host#*:}" ;; esac
     tries=0
@@ -783,8 +783,8 @@ if [ "$START" -eq 1 ] && [ "$INIT" != "none" ]; then
         if [ "$tries" -ge 30 ]; then
             warn "the node did not answer on http://$api_host/v1/descriptor;"
             case "$INIT" in
-                systemd) warn "check: journalctl -u witness -n 50" ;;
-                openrc) warn "check: /var/log/witness/witness.log" ;;
+                systemd) warn "check: journalctl -u keepword -n 50" ;;
+                openrc) warn "check: /var/log/keepword/keepword.log" ;;
             esac
             break
         fi
@@ -795,8 +795,8 @@ fi
 
 # ----------------------------------------------------------------- summary
 
-key=$(witness id | awk '/witness key/ {print $3}')
-step "Witness is installed"
+key=$(keepword id | awk '/witness key/ {print $3}')
+step "Keepword is installed"
 cat <<EOF
     witness key   $key
     data          $DATA_DIR (back up witness.key: it is this witness's identity)
@@ -807,9 +807,9 @@ EOF
 cat <<EOF
 
     Next steps:
-      witness net status          (lists anything keeping this node out of the network)
-      witness watch add https://example.org/terms --every 6h
-      witness config show
+      keepword net status          (lists anything keeping this node out of the network)
+      keepword watch add https://example.org/terms --every 6h
+      keepword config show
     Starting or joining a network: docs/NETWORK.md
-    ${DIM}(run witness commands as root or with sudo; they switch to the $SVC_USER user by themselves)${RESET}
+    ${DIM}(run keepword commands as root or with sudo; they switch to the $SVC_USER user by themselves)${RESET}
 EOF

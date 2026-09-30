@@ -1,8 +1,8 @@
-# Installing Witness
+# Installing Keepword
 
 There are two supported ways to run a node in production:
 
-- **The installer** (`scripts/install.sh`) builds Witness from source and sets
+- **The installer** (`scripts/install.sh`) builds Keepword from source and sets
   it up as a hardened system service. It supports Debian, Ubuntu, Fedora,
   RHEL-likes, Arch, openSUSE and Alpine, with systemd or OpenRC.
 - **The container image** (`Dockerfile`) is for Docker, Podman, NAS boxes and
@@ -11,8 +11,8 @@ There are two supported ways to run a node in production:
 ## Installer
 
 ```sh
-git clone https://github.com/aelthorim/witness.git
-cd witness
+git clone https://github.com/aelthorim/keepword.git
+cd keepword
 sudo sh scripts/install.sh --domain witness.example.org --caddy
 ```
 
@@ -22,10 +22,10 @@ That single command:
    when you pass `--caddy`). On Arch this is a full `pacman -Syu`, because
    Arch doesn't support partial upgrades; use `--no-packages` to manage
    packages yourself;
-2. installs Rust into `/opt/witness` if the system Rust is missing or too
+2. installs Rust into `/opt/keepword` if the system Rust is missing or too
    old, verifying the `rustup-init` checksum;
-3. builds `witness` in release mode and installs it to `/usr/local/bin`;
-4. creates a `witness` system user and `/var/lib/witness` (mode 0750);
+3. builds `keepword` in release mode and installs it to `/usr/local/bin`;
+4. creates a `keepword` system user and `/var/lib/keepword` (mode 0750);
 5. creates the node: key, config and empty log;
 6. downloads the IP-to-ASN table from iptoasn.com and schedules a weekly
    refresh;
@@ -61,43 +61,43 @@ sudo sh scripts/install.sh --domain witness.example.org --caddy --render --notar
 
 `sh scripts/install.sh --help` lists every option. `--source DIR` builds a
 local checkout. Without it, the installer builds the checkout it was run
-from, or clones `--repo`/`--ref` into `/opt/witness/src`.
+from, or clones `--repo`/`--ref` into `/opt/keepword/src`.
 
 ### What gets installed
 
 | Path | What |
 |---|---|
-| `/usr/local/bin/witness`, `witness-tlsn` | binaries |
-| `/usr/local/lib/witness/update-asn-db` | IP-to-ASN refresh script |
-| `/var/lib/witness/` | key, `witness.toml`, SQLite index, blobs, ASN table |
-| `/opt/witness/` | Rust toolchain, build cache, cloned source |
-| `witness.service` | the node: `serve --watch --anchor`, UI on 127.0.0.1:8480, API on 127.0.0.1:8481 |
-| `witness-asn-update.timer` | weekly ASN table refresh (cron on OpenRC) |
-| `witness-notary.service` | with `--notary` |
-| `/etc/caddy/witness.caddy` | with `--caddy`; imported from the Caddyfile |
+| `/usr/local/bin/keepword`, `keepword-tlsn` | binaries |
+| `/usr/local/lib/keepword/update-asn-db` | IP-to-ASN refresh script |
+| `/var/lib/keepword/` | key, `keepword.toml`, SQLite index, blobs, ASN table |
+| `/opt/keepword/` | Rust toolchain, build cache, cloned source |
+| `keepword.service` | the node: `serve --watch --anchor`, UI on 127.0.0.1:8480, API on 127.0.0.1:8481 |
+| `keepword-asn-update.timer` | weekly ASN table refresh (cron on OpenRC) |
+| `keepword-notary.service` | with `--notary` |
+| `/etc/caddy/keepword.caddy` | with `--caddy`; imported from the Caddyfile |
 
-The systemd units run as the unprivileged `witness` user. Hardening:
+The systemd units run as the unprivileged `keepword` user. Hardening:
 read-only system, no home directories, no capabilities, a system-call
 allow-list, no new privileges, and memory that can't be both writable and
 executable (except with `--render`, because Chromium's JIT needs it).
 
 ### Day-to-day
 
-Run `witness` as root or with sudo. It finds the installed node by itself
-and switches to the `witness` user before touching anything, so file
-ownership stays right. No alias or `WITNESS_DIR` is needed. As an ordinary
+Run `keepword` as root or with sudo. It finds the installed node by itself
+and switches to the `keepword` user before touching anything, so file
+ownership stays right. No alias or `KEEPWORD_DIR` is needed. As an ordinary
 user it tells you to use sudo, since the data directory is private to the
 service.
 
 ```sh
-witness watch add https://example.org/terms --every 6h
-witness request https://example.org/terms --every 1h --for 7days   # the network watches it
-witness request https://example.org/terms --cancel
-witness net status                     # ends with warnings about anything misconfigured
-witness config show
-witness config set network.peers '["https://witness.one.example"]'
-sudo systemctl restart witness         # after changing the config
-journalctl -u witness -f
+keepword watch add https://example.org/terms --every 6h
+keepword request https://example.org/terms --every 1h --for 7days   # the network watches it
+keepword request https://example.org/terms --cancel
+keepword net status                     # ends with warnings about anything misconfigured
+keepword config show
+keepword config set network.peers '["https://witness.one.example"]'
+sudo systemctl restart keepword         # after changing the config
+journalctl -u keepword -f
 ```
 
 The web UI shows captured content, so it only listens on localhost. View it
@@ -106,7 +106,7 @@ http://localhost:8480.
 
 To start a network or join one, see [NETWORK.md](NETWORK.md).
 
-**Back up `/var/lib/witness/witness.key`.** It is the witness's identity, and
+**Back up `/var/lib/keepword/witness.key`.** It is the witness's identity, and
 the log is only verifiable against it. A new key is a new witness.
 
 ### Firewall
@@ -150,7 +150,7 @@ server {
 
 Through a CDN, the address your proxy sees, and adds to `X-Forwarded-For`,
 is the CDN's, and the node would place every peer in the CDN's network
-(`witness net status` warns when peers seem to connect from Cloudflare).
+(`keepword net status` warns when peers seem to connect from Cloudflare).
 Have the proxy work out the client's address, as for any site behind a
 CDN, and pass it on in a header it sets itself. Caddy:
 
@@ -174,8 +174,8 @@ CF-Connecting-IP`, then `proxy_set_header X-Real-IP $remote_addr`. Then
 tell the node which header it is:
 
 ```sh
-witness config set network.client_ip_header X-Real-IP
-sudo systemctl restart witness
+keepword config set network.client_ip_header X-Real-IP
+sudo systemctl restart keepword
 ```
 
 The proxy must set that header on every request, replacing any the client
@@ -188,37 +188,37 @@ CDN from challenging requests to `/v1/` (Cloudflare's Bot Fight Mode,
 ### Uninstalling
 
 ```sh
-sudo sh scripts/install.sh --uninstall           # keeps /var/lib/witness
+sudo sh scripts/install.sh --uninstall           # keeps /var/lib/keepword
 sudo sh scripts/install.sh --uninstall --purge   # deletes the key and log too
 ```
 
 ## Container
 
 ```sh
-docker build -t witness .
-docker run -d --name witness --restart unless-stopped \
-    -v witness-data:/data \
+docker build -t keepword .
+docker run -d --name keepword --restart unless-stopped \
+    -v keepword-data:/data \
     -p 127.0.0.1:8480:8480 -p 127.0.0.1:8481:8481 \
-    -e WITNESS_ENDPOINT=https://witness.example.org \
-    -e WITNESS_PEERS=https://witness.one.example \
-    -e WITNESS_BEHIND_PROXY=1 \
-    witness
+    -e KEEPWORD_ENDPOINT=https://witness.example.org \
+    -e KEEPWORD_PEERS=https://witness.one.example \
+    -e KEEPWORD_BEHIND_PROXY=1 \
+    keepword
 ```
 
 Or `docker compose -f packaging/docker/compose.yaml up -d`. Settings:
 
 | Variable | Meaning |
 |---|---|
-| `WITNESS_ASN`, `WITNESS_COUNTRY` | where the node is (first start) |
-| `WITNESS_RETAIN` | `full`, `normalized` or `none` (first start) |
-| `WITNESS_ENDPOINT` | public URL of the peer API |
-| `WITNESS_PEERS` | comma-separated bootstrap peers |
-| `WITNESS_SEEDS=0` | don't join through the default seeds (a separate network, or a test) |
-| `WITNESS_BEHIND_PROXY=1` | trust `X-Forwarded-For` from your proxy |
-| `WITNESS_CLIENT_IP_HEADER` | the header your proxy puts the client address in, e.g. `X-Real-IP` (behind a CDN) |
-| `WITNESS_ASN_DB=0` | skip the IP-to-ASN table (refreshed at start when older than a week) |
+| `KEEPWORD_ASN`, `KEEPWORD_COUNTRY` | where the node is (first start) |
+| `KEEPWORD_RETAIN` | `full`, `normalized` or `none` (first start) |
+| `KEEPWORD_ENDPOINT` | public URL of the peer API |
+| `KEEPWORD_PEERS` | comma-separated bootstrap peers |
+| `KEEPWORD_SEEDS=0` | don't join through the default seeds (a separate network, or a test) |
+| `KEEPWORD_BEHIND_PROXY=1` | trust `X-Forwarded-For` from your proxy |
+| `KEEPWORD_CLIENT_IP_HEADER` | the header your proxy puts the client address in, e.g. `X-Real-IP` (behind a CDN) |
+| `KEEPWORD_ASN_DB=0` | skip the IP-to-ASN table (refreshed at start when older than a week) |
 
 The `/data` volume holds the key: back it up. Run CLI commands with
-`docker exec witness witness …`. With Docker's userland proxy, peers can
+`docker exec keepword keepword …`. With Docker's userland proxy, peers can
 appear to connect from the gateway address. Put a TLS reverse proxy on the
-host in front of port 8481 and set `WITNESS_BEHIND_PROXY=1`.
+host in front of port 8481 and set `KEEPWORD_BEHIND_PROXY=1`.
