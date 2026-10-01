@@ -46,12 +46,18 @@ pub async fn anchor_loop(node: Arc<Node>, log: impl Fn(String)) -> anyhow::Resul
             Err(e) => log(format!("{}  anchoring failed: {e:#}", format_ms(now_ms()))),
         }
         match node.anchor_upgrade().await {
-            Ok(r) if r.confirmed > 0 => log(format!(
-                "{}  {} anchors confirmed in Bitcoin",
-                format_ms(now_ms()),
-                r.confirmed
-            )),
-            Ok(_) => {}
+            Ok(r) => {
+                for e in &r.errors {
+                    log(format!("{}  anchor upgrade: {e}", format_ms(now_ms())));
+                }
+                if r.confirmed > 0 {
+                    log(format!(
+                        "{}  {} anchors confirmed in Bitcoin",
+                        format_ms(now_ms()),
+                        r.confirmed
+                    ));
+                }
+            }
             Err(e) => log(format!(
                 "{}  anchor upgrade failed: {e:#}",
                 format_ms(now_ms())

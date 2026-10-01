@@ -1,6 +1,7 @@
 //! Diffs between normalized captures, and silent-edit classification.
 
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,12 @@ static UPDATE_NOTICE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("valid regex")
 });
+
+/// How long a diff may search for the fewest changes; past it, what is left
+/// shows as replaced. A page can change every line on every capture, and
+/// the search takes time in the square of the lines changed: two minutes
+/// for 100 000 lines, days for the millions a big page can have.
+const DIFF_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -68,7 +75,9 @@ pub fn diff(old: &str, new: &str) -> Option<Change> {
     if old == new {
         return None;
     }
-    let td = TextDiff::from_lines(old, new);
+    let td = TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_lines(old, new);
     let mut ops = Vec::new();
     let (mut added, mut removed) = (0, 0);
     let mut reasons = Vec::new();
@@ -145,6 +154,16 @@ mod tests {
         assert!(!c.is_silent(), "{c:?}");
         let c = diff("p: a\n", "p: b\np: UPDATE: figures revised\n").unwrap();
         assert!(!c.is_silent());
+    }
+
+    #[test]
+    fn rewriting_every_line_finishes() {
+        // Without a timeout, this took two minutes.
+        let a: String = (0..100_000).map(|i| format!("p: a{i}\n")).collect();
+        let b: String = (0..100_000).map(|i| format!("p: b{i}\n")).collect();
+        let c = diff(&a, &b).unwrap();
+        assert_eq!((c.added, c.removed), (100_000, 100_000));
+        assert!(c.is_silent());
     }
 
     #[test]

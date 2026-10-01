@@ -28,6 +28,7 @@ struct Mock {
     /// Merkle root the "block" commits to (internal byte order).
     root: Mutex<Option<Vec<u8>>>,
     wrong_root: AtomicBool,
+    explorer_down: AtomicBool,
 }
 
 type S = State<Arc<Mock>>;
@@ -44,18 +45,29 @@ async fn drand(Path((_chain, _round)): Path<(String, String)>) -> impl IntoRespo
 
 /// Calendar: commit to the digest via a nonce and hash, pending here.
 async fn digest(State(m): S, body: Bytes) -> impl IntoResponse {
-    let nonce = Op::Prepend(vec![0x5a; 16]);
-    let a = nonce.apply(&body).unwrap();
+    pending(&body, 0x5a, m.base.lock().unwrap().clone())
+}
+
+fn pending(digest: &[u8], nonce: u8, uri: String) -> Vec<u8> {
+    let nonce = Op::Prepend(vec![nonce; 16]);
+    let a = nonce.apply(digest).unwrap();
     let c = Op::Sha256.apply(&a).unwrap();
     let mut leaf = Timestamp::new(c);
-    leaf.attestations.push(Attestation::Pending {
-        uri: m.base.lock().unwrap().clone(),
-    });
+    leaf.attestations.push(Attestation::Pending { uri });
     let mut mid = Timestamp::new(a);
     mid.ops.push((Op::Sha256, leaf));
-    let mut root = Timestamp::new(body.to_vec());
+    let mut root = Timestamp::new(digest.to_vec());
     root.ops.push((nonce, mid));
     ots::serialize_timestamp(&root)
+}
+
+/// A second calendar, which takes digests but answers upgrades with junk.
+async fn bad_digest(State(m): S, body: Bytes) -> impl IntoResponse {
+    pending(&body, 0x77, format!("{}/bad", m.base.lock().unwrap()))
+}
+
+async fn bad_timestamp(Path(_commitment): Path<String>) -> impl IntoResponse {
+    "<html>Service temporarily unavailable</html>"
 }
 
 /// Upgrade: 404 until "mined", then a path to the block Merkle root.
@@ -81,9 +93,12 @@ async fn timestamp(State(m): S, Path(commitment): Path<String>) -> impl IntoResp
     (StatusCode::OK, ots::serialize_timestamp(&up))
 }
 
-async fn block_height(Path(h): Path<u64>) -> impl IntoResponse {
+async fn block_height(State(m): S, Path(h): Path<u64>) -> impl IntoResponse {
     assert_eq!(h, HEIGHT);
-    BLOCK_HASH
+    if m.explorer_down.load(Ordering::SeqCst) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "");
+    }
+    (StatusCode::OK, BLOCK_HASH)
 }
 
 async fn block(State(m): S, Path(_hash): Path<String>) -> impl IntoResponse {
@@ -111,6 +126,8 @@ async fn mock() -> (Arc<Mock>, String) {
         .route("/{chain}/public/{round}", get(drand))
         .route("/digest", post(digest))
         .route("/timestamp/{c}", get(timestamp))
+        .route("/bad/digest", post(bad_digest))
+        .route("/bad/timestamp/{c}", get(bad_timestamp))
         .route("/block-height/{h}", get(block_height))
         .route("/block/{hash}", get(block))
         .route("/page", get(page))
@@ -244,4 +261,48 @@ async fn forged_beacon_fails() {
         Status::Fail
     );
     assert!(!r.ok());
+}
+
+/// One calendar answering junk, or the block explorer being down, must not
+/// hold up the other calendars' proofs, nor lose the proofs already in.
+#[tokio::test]
+async fn upgrades_survive_failing_calendars_and_explorers() {
+    let (m, base) = mock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.capture.allow_private_addresses = true;
+    cfg.network.allow_private_peers = true;
+    cfg.beacon.drand_url = None;
+    cfg.anchor.calendars = vec![format!("{base}/bad"), base.clone()];
+    cfg.anchor.esplora_url = Some(base.clone());
+    Node::init(dir.path(), &cfg).unwrap();
+    let node = Node::open(dir.path()).unwrap();
+    node.capture(&format!("{base}/page"), false).await.unwrap();
+    let a = node.anchor_submit().await.unwrap().unwrap();
+    let claims = ots::DetachedTimestamp::from_bytes(&a.ots)
+        .unwrap()
+        .timestamp
+        .claims();
+    assert_eq!(claims.len(), 2, "both calendars took the digest");
+
+    m.confirmed.store(true, Ordering::SeqCst);
+    m.explorer_down.store(true, Ordering::SeqCst);
+    let up = node.anchor_upgrade().await.unwrap();
+    assert_eq!((up.upgraded, up.confirmed), (1, 0));
+    assert_eq!(up.errors.len(), 2, "{:?}", up.errors);
+    let row = &node.store.anchors().unwrap()[0];
+    assert_eq!(row.status, "pending");
+    let kept = ots::DetachedTimestamp::from_bytes(&row.ots).unwrap();
+    assert!(
+        kept.timestamp
+            .claims()
+            .iter()
+            .any(|c| matches!(c.attestation, Attestation::Bitcoin { height: HEIGHT })),
+        "the completed proof was kept"
+    );
+
+    m.explorer_down.store(false, Ordering::SeqCst);
+    let up = node.anchor_upgrade().await.unwrap();
+    assert_eq!(up.confirmed, 1, "{:?}", up.errors);
+    assert_eq!(node.store.anchors().unwrap()[0].status, "confirmed");
 }

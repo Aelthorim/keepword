@@ -124,6 +124,9 @@ impl Node {
     }
 
     pub fn init(dir: &Path, config: &Config) -> Result<Keypair> {
+        // Before anything is written: a node whose config doesn't load
+        // can't be fixed with `keepword config`, nor initialized again.
+        config.validate()?;
         std::fs::create_dir_all(dir)?;
         if dir.join(config::CONFIG_FILE).exists() {
             bail!("{} is already initialized", dir.display());
@@ -470,21 +473,25 @@ impl Node {
         let heads = self.store.tree_heads()?;
         let me = self.key.public();
 
+        // A head per capture: roots and proofs from the whole log each time
+        // would take time in the square of its size.
+        let mut tree = merkle::MerkleCache::new();
+        for leaf in &leaves {
+            tree.push(*leaf);
+        }
         let mut bad_heads = 0;
         for (i, h) in heads.iter().enumerate() {
             let ok = h.verify().is_ok()
                 && h.head.log == me
-                && h.head.size as usize <= leaves.len()
-                && merkle::root(&leaves[..h.head.size as usize]) == h.head.root;
+                && tree.root(h.head.size as usize) == Some(h.head.root);
             if !ok {
                 bad_heads += 1;
             }
             if let Some(next) = heads.get(i + 1) {
-                let proof = merkle::consistency_proof(
-                    &leaves[..next.head.size as usize],
-                    h.head.size as usize,
-                )
-                .unwrap_or_default();
+                // None, when leaves are missing: that head is bad already.
+                let proof = tree
+                    .consistency_proof(h.head.size as usize, next.head.size as usize)
+                    .unwrap_or_default();
                 if h.verify_extension(next, &proof).is_err() {
                     bad_heads += 1;
                 }

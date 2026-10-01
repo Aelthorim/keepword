@@ -22,7 +22,7 @@ pub use noise::clean_text;
 pub use rules::{RuleError, SiteRules};
 
 /// Bump whenever normalizer output can change for the same input.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn extracts_content() {
         let n = norm(PAGE);
-        let expected = "keepword-norm/2 html\n\
+        let expected = "keepword-norm/3 html\n\
             title: Minister resigns\n\
             modified: 2024-05-01T10:00:00Z\n\
             h1: Minister resigns\n\

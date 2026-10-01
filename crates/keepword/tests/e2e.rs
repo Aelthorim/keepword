@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use keepword::Node;
 use keepword::config::Config;
 use keepword_core::bundle::{Bundle, Content, Status};
+use keepword_core::now_ms;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -215,4 +216,94 @@ async fn refuses_private_targets_by_default() {
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("non-public"), "{err:#}");
+}
+
+/// The audit checks a store that may have been tampered with: log leaves
+/// missing under a tree head are a failed check, not a crash.
+#[tokio::test]
+async fn audit_reports_missing_leaves() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), true);
+    for i in 0..3 {
+        *body.lock().unwrap() = PAGE.replace("never", &format!("never ({i})"));
+        node.capture(&format!("{base}/page"), false).await.unwrap();
+    }
+    assert!(node.audit().unwrap().ok());
+    rusqlite::Connection::open(tmp.path().join("index.sqlite"))
+        .unwrap()
+        .execute(
+            "DELETE FROM log_leaves WHERE idx = (SELECT MAX(idx) FROM log_leaves)",
+            [],
+        )
+        .unwrap();
+    let r = node.audit().unwrap();
+    assert!(!r.ok());
+    assert!(
+        r.checks
+            .iter()
+            .any(|c| c.name == "tree heads" && c.status == Status::Fail),
+        "{r:?}"
+    );
+}
+
+/// `keepword init` with a bad flag: nothing is written, so it can be run
+/// again (an invalid config would stop every other command, `config` too).
+#[test]
+fn init_writes_no_config_it_cant_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("node");
+    let mut cfg = Config::default();
+    cfg.vantage.country = Some("DEU".into());
+    assert!(Node::init(&dir, &cfg).is_err());
+    assert!(!dir.exists());
+    cfg.vantage.country = Some("DE".into());
+    Node::init(&dir, &cfg).unwrap();
+    Node::open(&dir).unwrap();
+}
+
+/// `keepword request` for a URL it already requested: the old request is
+/// only withdrawn for a valid new one.
+#[test]
+fn bad_request_replacements_keep_the_old_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), false);
+    let url = "https://example.org/terms";
+    let day = 86_400_000;
+    let active = || -> Vec<_> {
+        node.store
+            .requests_by(&node.key.public(), now_ms())
+            .unwrap()
+            .iter()
+            .map(|r| r.id())
+            .collect()
+    };
+    let (first, replaced) = node.replace_request(url, 600, day, false).unwrap();
+    assert_eq!(replaced, 0);
+    assert!(node.replace_request(url, 60, day, false).is_err());
+    assert!(node.replace_request(url, 600, 0, false).is_err());
+    assert!(node.replace_request(url, 600, 365 * day, false).is_err());
+    assert_eq!(active(), [first.id()]);
+    let (second, replaced) = node.replace_request(url, 1200, day, false).unwrap();
+    assert_eq!(replaced, 1);
+    assert_eq!(active(), [second.id()]);
+}
+
+/// Watch requests from the network can ask for any interval at least ten
+/// minutes long. The longest ones must not make a URL due every round.
+#[tokio::test]
+async fn the_longest_intervals_arent_due_every_round() {
+    let base = serve(Arc::new(Mutex::new(PAGE.to_string()))).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = Arc::new(node(tmp.path(), true));
+    let url = format!("{base}/page");
+    for every_secs in [1 << 62, u64::MAX] {
+        node.store
+            .watch_add(&url, every_secs, false, now_ms())
+            .unwrap();
+        assert_eq!(keepword::web::run_due(&node, |_| {}).await.unwrap(), 1);
+        assert_eq!(keepword::web::run_due(&node, |_| {}).await.unwrap(), 0);
+        node.store.watch_remove(&url).unwrap();
+    }
 }

@@ -26,8 +26,10 @@ pub async fn run_due(node: &Arc<Node>, log: impl Fn(String)) -> anyhow::Result<u
         .watches()?
         .into_iter()
         .filter(|w| {
-            w.last_run
-                .is_none_or(|last| now - last >= w.every_secs as i64 * 1000)
+            // Network requests set intervals too, to any u64: one too long
+            // to count in milliseconds is never due again.
+            let every_ms = i64::try_from(w.every_secs.saturating_mul(1000)).unwrap_or(i64::MAX);
+            w.last_run.is_none_or(|last| now - last >= every_ms)
         })
         .collect();
     for w in &due {
@@ -59,7 +61,11 @@ pub async fn run_due(node: &Arc<Node>, log: impl Fn(String)) -> anyhow::Result<u
 
 pub async fn scheduler(node: Arc<Node>, log: impl Fn(String)) -> anyhow::Result<()> {
     loop {
-        run_due(&node, &log).await?;
+        // Like a failed sync, a failed round is retried: it must not stop
+        // the node.
+        if let Err(e) = run_due(&node, &log).await {
+            log(format!("{}  watches failed: {e:#}", format_ms(now_ms())));
+        }
         tokio::time::sleep(Duration::from_secs(15)).await;
     }
 }

@@ -1275,6 +1275,7 @@ dependencies = [
  "keepword-store",
  "libc",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1329,6 +1330,7 @@ version = "2.0.0"
 dependencies = [
  "ego-tree",
  "encoding_rs",
+ "html5ever",
  "keepword-core",
  "regex",
  "scraper",

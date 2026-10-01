@@ -138,6 +138,7 @@ impl Default for NetworkConfig {
 pub struct BeaconConfig {
     /// drand HTTP API base; beacons can also arrive over gossip. Set to ""
     /// to disable.
+    #[serde(serialize_with = "none_as_empty")]
     pub drand_url: Option<String>,
     /// Without a beacon, assignment falls back to a predictable seed. Only
     /// acceptable for private test networks.
@@ -219,6 +220,7 @@ pub struct AnchorConfig {
     pub calendars: Vec<String>,
     /// Esplora-compatible API for checking Bitcoin block headers ("" to
     /// disable).
+    #[serde(serialize_with = "none_as_empty")]
     pub esplora_url: Option<String>,
     pub interval_secs: u64,
 }
@@ -437,6 +439,12 @@ impl Config {
     }
 }
 
+/// Saves an unset service URL as "", which disables it: left out of the
+/// file, it would load as the default and be used after all.
+fn none_as_empty<S: serde::Serializer>(url: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(url.as_deref().unwrap_or(""))
+}
+
 pub fn create_key(dir: &Path) -> Result<Keypair> {
     let path = dir.join(KEY_FILE);
     if path.exists() {
@@ -506,6 +514,22 @@ mod tests {
         assert!(cfg.beacon.drand().is_some());
         let off: Config = toml::from_str("[beacon]\ndrand_url = \"\"\n").unwrap();
         assert!(off.beacon.drand().is_none());
+    }
+
+    #[test]
+    fn unset_services_stay_off_when_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = Config::default();
+        c.beacon.drand_url = None;
+        c.anchor.esplora_url = None;
+        c.save(dir.path()).unwrap();
+        let c = Config::load(dir.path()).unwrap();
+        assert_eq!((c.beacon.drand(), c.anchor.esplora()), (None, None));
+        // `keepword config unset`
+        let mut c = Config::default();
+        c.set_path("beacon.drand_url", None).unwrap();
+        c.save(dir.path()).unwrap();
+        assert_eq!(Config::load(dir.path()).unwrap().beacon.drand(), None);
     }
 
     #[test]

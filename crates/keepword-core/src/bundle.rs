@@ -517,7 +517,7 @@ fn check_tlsn(r: &mut Report, att: &SignedAttestation, t: &TlsnEvidence) {
             rc.server_name,
             host.unwrap_or_default()
         ))
-    } else if (rc.verified_at_ms - a.fetched_at_ms).abs() > 10 * 60_000 {
+    } else if rc.verified_at_ms.abs_diff(a.fetched_at_ms) > 10 * 60_000 {
         Some("receipt time does not match the capture time".into())
     } else {
         None
@@ -634,5 +634,44 @@ mod tests {
 
         r.push("body", Status::Fail, "hash mismatch");
         assert_eq!(r.strength(), None);
+    }
+
+    /// Both times come signed from keys anyone can make: any two values
+    /// far apart fail the check, the extremes too.
+    #[test]
+    fn receipt_times_far_from_the_capture_fail() {
+        let prover = crate::Keypair::generate().unwrap();
+        let verifier = crate::Keypair::generate().unwrap();
+        let t = 1_700_000_000_000;
+        for (fetched, verified, want) in [
+            (t, t + 5 * 60_000, Status::Skip),
+            (t, t + 11 * 60_000, Status::Fail),
+            (i64::MIN, 0, Status::Fail),
+            (-(1 << 62), 1 << 62, Status::Fail),
+            (i64::MAX, i64::MIN, Status::Fail),
+        ] {
+            let mut a = crate::attestation::tests::sample(&prover);
+            a.fetched_at_ms = fetched;
+            let receipt = Signed::sign(
+                TlsnReceipt {
+                    prover: prover.public(),
+                    server_name: "example.com".into(),
+                    sent_hash: Digest::of(b"request"),
+                    received_hash: Digest::of(b"response"),
+                    received_len: 8,
+                    verified_at_ms: verified,
+                    verifier: verifier.public(),
+                },
+                &verifier,
+            )
+            .unwrap();
+            let evidence = TlsnEvidence {
+                receipt,
+                received_b64: None,
+            };
+            let mut r = Report::default();
+            check_tlsn(&mut r, &a.sign(&prover).unwrap(), &evidence);
+            assert_eq!(r.checks[0].status, want, "{fetched} {verified}: {r:?}");
+        }
     }
 }

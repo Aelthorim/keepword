@@ -18,6 +18,8 @@ pub struct UpgradeReport {
     pub checked: usize,
     pub upgraded: usize,
     pub confirmed: usize,
+    /// Calendars and explorers that failed; the rest went ahead.
+    pub errors: Vec<String>,
 }
 
 impl Node {
@@ -77,38 +79,52 @@ impl Node {
             rep.checked += 1;
             let mut d = DetachedTimestamp::from_bytes(&row.ots)?;
             let mut changed = false;
+            // A calendar that can't be reached or answers nonsense only
+            // holds up its own proof, not the others' or other anchors'.
             for claim in d.timestamp.claims() {
                 let Attestation::Pending { uri } = &claim.attestation else {
                     continue;
                 };
                 let url = join(uri, &format!("/timestamp/{}", hex::encode(&claim.msg)));
-                match self.net.get_bytes(&url, MAX_OTS).await {
+                let upgrade = match self.net.get_bytes(&url, MAX_OTS).await {
                     Ok(body) => {
-                        let t = ots::parse_calendar_response(&claim.msg, &body)?;
+                        ots::parse_calendar_response(&claim.msg, &body).map_err(anyhow::Error::from)
+                    }
+                    Err(e) => Err(e),
+                };
+                match upgrade {
+                    Ok(t) => {
                         if let Some(node) = d.timestamp.node_mut(&claim.msg) {
                             node.merge(t)?;
                             changed = true;
                         }
                     }
+                    // Not in a block yet.
                     Err(e) if status_of(&e) == Some(404) => {}
-                    Err(_) => {}
+                    Err(e) => rep.errors.push(format!("calendar {uri}: {e:#}")),
                 }
             }
             if changed {
                 rep.upgraded += 1;
                 row.ots = d.to_bytes();
             }
-            for claim in d.timestamp.claims() {
-                if let (Attestation::Bitcoin { height }, Some(root)) =
-                    (&claim.attestation, claim.bitcoin_merkle_root_hex())
-                {
-                    if let Some(esplora) = self.config.anchor.esplora() {
-                        if check_block(&self.net, esplora, *height, &root).await? {
+            // Keep the completed proof even while the explorer is down.
+            if let Some(esplora) = self.config.anchor.esplora() {
+                for claim in d.timestamp.claims() {
+                    let (Attestation::Bitcoin { height }, Some(root)) =
+                        (&claim.attestation, claim.bitcoin_merkle_root_hex())
+                    else {
+                        continue;
+                    };
+                    match check_block(&self.net, esplora, *height, &root).await {
+                        Ok(true) => {
                             row.status = "confirmed".into();
                             row.height = Some(*height);
                             rep.confirmed += 1;
                             break;
                         }
+                        Ok(false) => {}
+                        Err(e) => rep.errors.push(format!("block {height}: {e:#}")),
                     }
                 }
             }

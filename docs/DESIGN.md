@@ -171,13 +171,13 @@ the site rules behind the profile. Verification checks, independently:
 Any piece can be withheld (after an erasure, say) without affecting the
 other checks. `keepword verify --bundle FILE` needs no node, key or network.
 
-## 4. Normalization (v2, implemented)
+## 4. Normalization (v3, implemented)
 
 The output is line-oriented text, one block per line, which makes it
 diffable, readable and cheap to hash:
 
 ```
-keepword-norm/2 html
+keepword-norm/3 html
 title: Minister resigns
 modified: 2024-05-01T10:00:00Z
 h1: Minister resigns
@@ -206,7 +206,8 @@ The rules:
   within 90 s modulo whole hours). `fetched_at` is signed, so verifiers get
   the same result.
 - **Links**: resolved, fragment dropped, tracking parameters (`utm_*`,
-  `fbclid`, `gclid`, …) removed.
+  `fbclid`, `gclid`, …) removed. A link's text leaves out the links
+  nested in it (table cells can nest them).
 - **Images**: resolved and compared *without* query string (CDN resize
   parameters and signatures live there). `data:` URIs are replaced by
   their hash.
@@ -214,6 +215,11 @@ The rules:
   modified dates (Open Graph meta or JSON-LD). A changed `modified:` line
   is how a publisher *discloses* an edit in machine-readable form.
 - **Charset**: Content-Type, then BOM, then `<meta charset>`, then UTF-8.
+- **Limits**: start tags nested more than 512 deep are ignored, and their
+  text stays in the element they would have opened in (Chromium and
+  Safari don't nest deeper either). A page's tree stops growing at one
+  node per two bytes of markup. Without these, a page built for it takes
+  the parser time in the square of its size.
 - **JSON** is re-serialized with sorted keys. **Text** has each line
   cleaned. **Everything else** is opaque: the normalized form is the body
   hash.
@@ -230,7 +236,8 @@ matches an update notice ("Update:", "Last updated", "Correction",
 Redaktion", "mise à jour", …).
 Otherwise it is **silent**. Removing a correction notice does not count as
 disclosure. When the normalized text wasn't retained, a change is recorded
-but never labelled silent.
+but never labelled silent. A diff looks for the fewest changes for a
+second at most; after that, the rest of it shows as replaced.
 
 ### Regression corpus
 
