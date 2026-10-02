@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
+use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,7 +35,6 @@ use keepword_core::net::{Gossip, TlsnReceipt};
 use keepword_core::statement::{Signed, Statement};
 use keepword_core::{CaptureMethod, Digest, WitnessKey, now_ms};
 use serde::{Deserialize, Serialize};
-use tlsn::Session;
 use tlsn::config::prove::ProveConfig;
 use tlsn::config::prover::ProverConfig;
 use tlsn::config::tls::TlsClientConfig;
@@ -43,12 +43,34 @@ use tlsn::config::verifier::VerifierConfig;
 use tlsn::connection::ServerName;
 use tlsn::verifier::{VerifierCommitStart, VerifierOutput};
 use tlsn::webpki::RootCertStore;
+use tlsn::{Session, SessionHandle};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+use tokio_util::task::AbortOnDropHandle;
 use url::Url;
 
 pub use tlsn::webpki::CertificateDer;
+
+/// How long either side waits on a request: a hello, a receipt lookup.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long either side gives an MPC-TLS session. Sessions take seconds;
+/// this only stops one that stalls, because the peer stopped talking or
+/// TLSNotary hung, from holding its connection and memory forever.
+const SESSION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// Runs `f`, giving up after `limit`.
+async fn within<T, E: Into<anyhow::Error>>(
+    limit: Duration,
+    what: &str,
+    f: impl Future<Output = Result<T, E>>,
+) -> Result<T> {
+    match tokio::time::timeout(limit, f).await {
+        Ok(r) => r.map_err(Into::into),
+        Err(_) => bail!("{what} timed out after {}s", limit.as_secs()),
+    }
+}
 
 /// MPC cost grows with the bytes exchanged, so both sides agree on limits
 /// up front. The verifier refuses anything larger than its own limits.
@@ -128,7 +150,8 @@ pub struct Proven {
 
 /// Prover side of one MPC-TLS session: fetch `path` from `server_name` over
 /// `server`, with the verifier on the other end of `verifier`, and reveal
-/// the whole transcript and the server identity.
+/// the whole transcript and the server identity. Dropping the future ends
+/// the session.
 pub async fn prove<V, S>(
     verifier: V,
     server: S,
@@ -144,7 +167,7 @@ where
 {
     let session = Session::new(verifier.compat());
     let (driver, mut handle) = session.split();
-    let driver_task = tokio::spawn(driver);
+    let driver_task = AbortOnDropHandle::new(tokio::spawn(driver));
 
     let prover = handle
         .new_prover(ProverConfig::builder().build()?)?
@@ -163,10 +186,10 @@ where
         server.compat(),
     )?;
     let tls = TokioIo::new(tls.compat());
-    let prover_task = tokio::spawn(prover.into_future());
+    let prover_task = AbortOnDropHandle::new(tokio::spawn(prover.into_future()));
 
     let (mut sender, conn) = hyper::client::conn::http1::handshake(tls).await?;
-    tokio::spawn(conn);
+    let _conn = AbortOnDropHandle::new(tokio::spawn(conn));
     let req = Request::builder()
         .uri(path)
         .header("Host", server_name)
@@ -202,14 +225,14 @@ pub struct Verified {
 }
 
 /// Verifier side of one session. Requires the server identity and the full
-/// transcript to be revealed.
+/// transcript to be revealed. Dropping the future ends the session.
 pub async fn verify<P>(prover: P, roots: RootCertStore, limits: Limits) -> Result<Verified>
 where
     P: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let session = Session::new(prover.compat());
     let (driver, mut handle) = session.split();
-    let driver_task = tokio::spawn(driver);
+    let driver_task = AbortOnDropHandle::new(tokio::spawn(driver));
 
     let verifier = handle.new_verifier(VerifierConfig::builder().root_store(roots).build()?)?;
     let verifier = match verifier.commit().await? {
@@ -217,12 +240,14 @@ where
             let cfg = v.config();
             if cfg.max_sent_data() > limits.max_sent || cfg.max_recv_data() > limits.max_recv {
                 v.reject(Some("data limits too large")).await?;
+                hang_up(handle, driver_task).await;
                 bail!("prover asked for larger limits than this verifier allows");
             }
             v.accept().await?.run().await?
         }
         VerifierCommitStart::Proxy(v) => {
             v.reject(Some("only MPC-TLS is supported")).await?;
+            hang_up(handle, driver_task).await;
             bail!("prover asked for proxy mode");
         }
     };
@@ -232,6 +257,7 @@ where
             .reject(Some("the server identity must be revealed"))
             .await?;
         v.close().await?;
+        hang_up(handle, driver_task).await;
         bail!("prover did not reveal the server identity");
     }
     let (
@@ -258,6 +284,12 @@ where
     })
 }
 
+/// Closes a session after refusing the peer, once the refusal is out.
+async fn hang_up<T>(handle: SessionHandle, driver: AbortOnDropHandle<T>) {
+    handle.close();
+    let _ = driver.await;
+}
+
 /// A witness's notarization service.
 pub struct VerifierService {
     node: Arc<Node>,
@@ -281,7 +313,26 @@ impl VerifierService {
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> Result<()> {
         loop {
-            let (sock, peer) = listener.accept().await?;
+            let (sock, peer) = match listener.accept().await {
+                Ok(conn) => conn,
+                // One connection that died before it was accepted.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::ConnectionAborted
+                            | ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    continue;
+                }
+                // Out of file descriptors, say: sessions ending free some.
+                Err(e) => {
+                    eprintln!("tlsn accept: {e}");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
             let me = self.clone();
             tokio::spawn(async move {
                 if let Err(e) = me.handle(sock).await {
@@ -293,10 +344,11 @@ impl VerifierService {
 
     async fn handle(&self, mut sock: TcpStream) -> Result<()> {
         sock.set_nodelay(true)?;
-        match sock.read_u8().await? {
+        match within(REQUEST_TIMEOUT, "request", sock.read_u8()).await? {
             b'P' => {
-                let hello: Signed<TlsnHello> =
-                    serde_json::from_slice(&read_frame(&mut sock, 4096).await?)?;
+                let hello: Signed<TlsnHello> = serde_json::from_slice(
+                    &within(REQUEST_TIMEOUT, "hello", read_frame(&mut sock, 4096)).await?,
+                )?;
                 let h = &hello.body;
                 hello.verify().context("hello signature")?;
                 if h.verifier != self.node.key.public()
@@ -318,7 +370,12 @@ impl VerifierService {
                 {
                     bail!("nonce reused");
                 }
-                let v = verify(sock, self.roots.clone(), self.limits).await?;
+                let v = within(
+                    SESSION_TIMEOUT,
+                    "TLSNotary session",
+                    verify(sock, self.roots.clone(), self.limits),
+                )
+                .await?;
                 let receipt = Signed::sign(
                     TlsnReceipt {
                         prover: h.prover,
@@ -339,7 +396,9 @@ impl VerifierService {
                 Ok(())
             }
             b'R' => {
-                let nonce: Digest = serde_json::from_slice(&read_frame(&mut sock, 256).await?)?;
+                let nonce: Digest = serde_json::from_slice(
+                    &within(REQUEST_TIMEOUT, "request", read_frame(&mut sock, 256)).await?,
+                )?;
                 let r = self
                     .receipts
                     .lock()
@@ -431,18 +490,27 @@ pub async fn capture_with(
         .user_agent
         .clone()
         .unwrap_or_else(|| keepword_capture::HttpConfig::default().user_agent);
-    let proven = prove(
-        vs,
-        server,
-        &host,
-        &path,
-        &ua,
-        notary.roots.clone(),
-        notary.limits,
+    let proven = within(
+        SESSION_TIMEOUT,
+        "TLSNotary session",
+        prove(
+            vs,
+            server,
+            &host,
+            &path,
+            &ua,
+            notary.roots.clone(),
+            notary.limits,
+        ),
     )
     .await?;
     let fetched_at_ms = now_ms();
-    let receipt = fetch_receipt(notary.addr, nonce).await?;
+    let receipt = within(
+        REQUEST_TIMEOUT,
+        "receipt lookup",
+        fetch_receipt(notary.addr, nonce),
+    )
+    .await?;
     let r = &receipt.body;
     receipt.verify().context("receipt signature")?;
     if r.verifier != notary.key

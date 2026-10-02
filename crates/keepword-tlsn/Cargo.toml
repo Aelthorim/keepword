@@ -22,7 +22,7 @@ keepword-core = { path = "../keepword-core" }
 keepword-capture = { path = "../keepword-capture" }
 keepword = { path = "../keepword" }
 
-tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7", features = ["mozilla-certs"] }
+tlsn = { git = "https://github.com/tlsnotary/tlsn", rev = "2d7a627b024f8acaa0438a9ffe925f58910391de", features = ["mozilla-certs"] }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -32,11 +32,13 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio-util = { version = "0.7", features = ["compat", "rt"] }
 url = "2"
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time, for the timeout tests.
+tokio = { version = "1", features = ["test-util"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-tlsn-server-fixture-certs = { git = "https://github.com/tlsnotary/tlsn", rev = "b9b2e9e2644810207938274dd918bafbd65877a7" }
+tlsn-server-fixture-certs = { git = "https://github.com/tlsnotary/tlsn", rev = "2d7a627b024f8acaa0438a9ffe925f58910391de" }
