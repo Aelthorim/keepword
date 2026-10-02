@@ -11,7 +11,7 @@ use keepword::Node;
 use keepword::config::Config;
 use keepword::federation::{PushRequest, PushResponse};
 use keepword_core::beacon::{Beacon, round_at};
-use keepword_core::net::{Alert, AlertKind, Descriptor, Gossip, PushEnvelope, WatchRequest};
+use keepword_core::net::{Alert, AlertKind, Descriptor, Gossip, WatchRequest};
 use keepword_core::statement::Signed;
 use keepword_core::{Keypair, now_ms};
 use tokio::net::TcpListener;
@@ -28,22 +28,10 @@ fn new_node() -> (tempfile::TempDir, Node) {
 
 /// Push `messages` the way a peer's sync does. Returns how many were taken.
 fn push(node: &Node, from: &Keypair, messages: Vec<Gossip>) -> usize {
-    let envelope = Signed::sign(
-        PushEnvelope {
-            from: from.public(),
-            to: node.key.public(),
-            sent_at_ms: now_ms(),
-            payload: keepword_core::net::payload_digest(&messages),
-        },
-        from,
-    )
-    .unwrap();
-    node.receive_push(
-        PushRequest { envelope, messages },
-        "198.51.100.7".parse().unwrap(),
-    )
-    .unwrap()
-    .accepted
+    let req = PushRequest::sign(from, node.key.public(), now_ms(), messages).unwrap();
+    node.receive_push(req, "198.51.100.7".parse().unwrap())
+        .unwrap()
+        .accepted
 }
 
 fn descriptor(k: &Keypair, endpoint: &str) -> Signed<Descriptor> {
@@ -261,21 +249,9 @@ async fn peers_behind_a_cdn_are_placed_where_they_are() {
     let mut sent = 0;
     let mut push = async |headers: &[(&str, &str)]| {
         sent += 1;
-        let envelope = Signed::sign(
-            PushEnvelope {
-                from: peer.public(),
-                to: seed.node.key.public(),
-                sent_at_ms: now_ms() + sent,
-                payload: keepword_core::net::payload_digest(&[]),
-            },
-            &peer,
-        )
-        .unwrap();
-        let body = serde_json::to_vec(&PushRequest {
-            envelope,
-            messages: vec![],
-        })
-        .unwrap();
+        let signed =
+            PushRequest::sign(&peer, seed.node.key.public(), now_ms() + sent, vec![]).unwrap();
+        let body = serde_json::to_vec(&signed).unwrap();
         let mut req = http
             .post(format!("{}/v1/gossip", seed.endpoint))
             .header("content-type", "application/json")
@@ -305,4 +281,167 @@ async fn peers_behind_a_cdn_are_placed_where_they_are() {
         .unwrap()
         .unwrap();
     assert_eq!(stored.body.ip.to_string(), "127.0.0.1");
+}
+
+/// Witnesses running a newer version gossip kinds of messages this one
+/// doesn't know. Pulling must step over them, however many there are: a
+/// page of them used to end the pull where it began, every round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn new_message_kinds_dont_stall_pulls() {
+    use axum::extract::Query;
+    use axum::routing::get;
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+
+    let newer = Keypair::generate().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let alert = Gossip::Alert(
+        Signed::sign(
+            Alert {
+                kind: AlertKind::SilentEdit,
+                url: Some("https://e.example/".into()),
+                summary: "after the new kinds".into(),
+                evidence: vec![],
+                issued_at_ms: now_ms(),
+                issuer: newer.public(),
+            },
+            &newer,
+        )
+        .unwrap(),
+    );
+    let outbox: Vec<Value> = (1..=600)
+        .map(|i| json!([i, {"type": "from_the_future", "n": i}]))
+        .chain([json!([601, alert])])
+        .collect();
+    let desc = descriptor(&newer, &endpoint);
+    let app = axum::Router::new()
+        .route(
+            "/v1/descriptor",
+            get(move || async move { axum::Json(desc) }),
+        )
+        .route("/v1/peers", get(|| async { axum::Json(json!([])) }))
+        .route(
+            "/v1/gossip",
+            get(move |Query(q): Query<HashMap<String, i64>>| async move {
+                let page: Vec<Value> = outbox
+                    .iter()
+                    .filter(|e| e[0].as_i64().unwrap() > q["after"])
+                    .take(q["limit"] as usize)
+                    .cloned()
+                    .collect();
+                axum::Json(json!({ "messages": page }))
+            })
+            .post(|| async { axum::Json(json!({"accepted": 0, "observation": null})) }),
+        );
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let older = spawn(64500, vec![endpoint]).await;
+    older.node.sync().await.unwrap();
+    let alerts = older.node.store.alerts(10).unwrap();
+    assert!(
+        alerts
+            .iter()
+            .any(|a| a.body.summary == "after the new kinds"),
+        "{alerts:?}"
+    );
+}
+
+/// A push with messages of a kind the receiver doesn't know still proves
+/// where its sender is: the receipt used to be withheld.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pushes_with_new_message_kinds_get_receipts() {
+    let older = spawn(64500, vec![]).await;
+    let newer = Keypair::generate().unwrap();
+    let known = Gossip::Descriptor(descriptor(&newer, "https://newer.example"));
+    let req = PushRequest::sign(&newer, older.node.key.public(), now_ms(), vec![known]).unwrap();
+    let mut ids = req.ids.clone();
+    ids.push(keepword_core::Digest::of(b"a message from the future"));
+    let envelope = Signed::sign(
+        keepword_core::net::PushEnvelope {
+            payload: keepword_core::net::payload_digest_of_ids(&ids),
+            ..req.envelope.body.clone()
+        },
+        &newer,
+    )
+    .unwrap();
+    let mut body = serde_json::to_value(&req).unwrap();
+    body["envelope"] = serde_json::to_value(&envelope).unwrap();
+    body["ids"] = serde_json::to_value(&ids).unwrap();
+    body["messages"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"type": "from_the_future", "n": 1}));
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/gossip", older.endpoint))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
+    assert_eq!(resp.accepted, 1);
+    let receipt = resp.observation.expect("a receipt");
+    assert_eq!(receipt.body.subject, newer.public());
+}
+
+/// 2.0.0 witnesses push without the messages' IDs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pushes_from_2_0_0_witnesses_get_receipts() {
+    let node = spawn(64501, vec![]).await;
+    let older = Keypair::generate().unwrap();
+    let known = Gossip::Descriptor(descriptor(&older, "https://older.example"));
+    let req = PushRequest::sign(&older, node.node.key.public(), now_ms(), vec![known]).unwrap();
+    let mut body = serde_json::to_value(&req).unwrap();
+    body.as_object_mut().unwrap().remove("ids");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/gossip", node.endpoint))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
+    assert_eq!(resp.accepted, 1);
+    let receipt = resp.observation.expect("a receipt");
+    assert_eq!(receipt.body.subject, older.public());
+}
+
+/// A push must list its messages' IDs, where the receiver can work them
+/// out; otherwise it isn't authentic and earns no receipt.
+#[test]
+fn pushes_with_wrong_ids_get_no_receipt() {
+    let (_d, node) = new_node();
+    let peer = Keypair::generate().unwrap();
+    let msg = Gossip::Descriptor(descriptor(&peer, "https://peer.example"));
+    let push = |ids: Vec<keepword_core::Digest>, messages: Vec<Option<Gossip>>| {
+        let envelope = Signed::sign(
+            keepword_core::net::PushEnvelope {
+                from: peer.public(),
+                to: node.key.public(),
+                sent_at_ms: now_ms(),
+                payload: keepword_core::net::payload_digest_of_ids(&ids),
+            },
+            &peer,
+        )
+        .unwrap();
+        let req = PushRequest {
+            envelope,
+            ids,
+            messages,
+        };
+        node.receive_push(req, "198.51.100.7".parse().unwrap())
+            .unwrap()
+            .observation
+    };
+    let other = keepword_core::Digest::of(b"another message");
+    assert!(push(vec![other], vec![Some(msg.clone())]).is_none());
+    assert!(push(vec![msg.id(), other], vec![Some(msg.clone())]).is_none());
+    // No IDs, as from 2.0.0, with a message the receiver can't read.
+    assert!(push(vec![], vec![Some(msg.clone()), None]).is_none());
+    assert!(push(vec![msg.id()], vec![Some(msg)]).is_some());
 }

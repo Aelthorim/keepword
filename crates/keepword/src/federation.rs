@@ -21,10 +21,12 @@ use keepword_core::assign::{self, Candidate, DiversityPolicy};
 use keepword_core::beacon::{self, epoch_of};
 use keepword_core::net::{
     Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope, WatchCancel,
-    WatchRequest, payload_digest,
+    WatchRequest, payload_digest, payload_digest_of_ids,
 };
 use keepword_core::statement::Signed;
-use keepword_core::{Digest, SignedAttestation, SignedTreeHead, WitnessKey, now_ms, target};
+use keepword_core::{
+    Digest, Keypair, SignedAttestation, SignedTreeHead, WitnessKey, now_ms, target,
+};
 use keepword_store::net::{Peer, RequestWatch};
 use serde::{Deserialize, Serialize};
 
@@ -36,13 +38,12 @@ use crate::vantage::{self, Location};
 pub const MAX_REQUEST_MS: i64 = 30 * 86_400_000;
 /// Shortest interval a watch request may ask for.
 pub const MIN_REQUEST_EVERY_SECS: u64 = 600;
-/// Allowed clock skew for timestamps in messages.
 /// Gossiped heads of a log checked against this node's audit per audit.
 const HEAD_CHECKS_PER_AUDIT: u32 = 8;
 /// How long a log may fail to serve a consistency proof before that counts
 /// against it.
 const HEAD_CHECK_GRACE_MS: i64 = 86_400_000;
-
+/// Allowed clock skew for timestamps in messages.
 pub const SKEW_MS: i64 = 5 * 60_000;
 /// Descriptors older than this are stale; nodes re-issue theirs every run
 /// and re-announce it every sync.
@@ -142,31 +143,97 @@ impl Limits {
     }
 }
 
+/// A page of a peer's gossip outbox, by sequence number. Messages of kinds
+/// this version doesn't know are `None`: skipped, but their sequence
+/// numbers still move the cursor past them.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GossipPage {
-    #[serde(deserialize_with = "skip_unknown")]
-    pub messages: Vec<(i64, Gossip)>,
+    #[serde(deserialize_with = "outbox_entries")]
+    pub messages: Vec<(i64, Option<Gossip>)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PushRequest {
     pub envelope: Signed<PushEnvelope>,
-    #[serde(deserialize_with = "skip_unknown")]
-    pub messages: Vec<Gossip>,
+    /// The messages' IDs, which the envelope's payload hashes: a receiver
+    /// can't work out the ID of a message of a kind it doesn't know. 2.0.0
+    /// witnesses don't send them, nor messages a later version doesn't know.
+    #[serde(default)]
+    pub ids: Vec<Digest>,
+    /// `None` for a kind this version doesn't know.
+    #[serde(deserialize_with = "push_entries")]
+    pub messages: Vec<Option<Gossip>>,
 }
 
-/// Message kinds from newer versions are skipped instead of failing the
-/// whole page, so nodes can be upgraded one at a time.
-fn skip_unknown<'de, D, T>(d: D) -> std::result::Result<Vec<T>, D::Error>
+impl PushRequest {
+    /// A push of `messages` from `key` to the witness `to`.
+    pub fn sign(
+        key: &Keypair,
+        to: WitnessKey,
+        sent_at_ms: i64,
+        messages: Vec<Gossip>,
+    ) -> Result<Self> {
+        let envelope = Signed::sign(
+            PushEnvelope {
+                from: key.public(),
+                to,
+                sent_at_ms,
+                payload: payload_digest(&messages),
+            },
+            key,
+        )?;
+        Ok(PushRequest {
+            envelope,
+            ids: messages.iter().map(Gossip::id).collect(),
+            messages: messages.into_iter().map(Some).collect(),
+        })
+    }
+}
+
+/// What the network accepts of a watch request's timing.
+fn check_request(every_secs: u64, duration_ms: i64) -> Result<()> {
+    if every_secs < MIN_REQUEST_EVERY_SECS {
+        bail!(
+            "the network accepts intervals of at least {} minutes",
+            MIN_REQUEST_EVERY_SECS / 60
+        );
+    }
+    if duration_ms <= 0 {
+        bail!("a request must run for some time");
+    }
+    if duration_ms > MAX_REQUEST_MS {
+        bail!("requests can run for at most 30 days");
+    }
+    Ok(())
+}
+
+// Message kinds from newer versions are skipped instead of failing the
+// whole page or push, so nodes can be upgraded one at a time.
+
+fn known(v: serde_json::Value) -> Option<Gossip> {
+    serde_json::from_value(v).ok()
+}
+
+fn outbox_entries<'de, D>(d: D) -> std::result::Result<Vec<(i64, Option<Gossip>)>, D::Error>
 where
     D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
 {
     let raw = Vec::<serde_json::Value>::deserialize(d)?;
     Ok(raw
         .into_iter()
-        .filter_map(|v| serde_json::from_value(v).ok())
+        // One that isn't `[sequence number, message]` at all is dropped,
+        // not the page with it.
+        .filter_map(|e| serde_json::from_value::<(i64, serde_json::Value)>(e).ok())
+        .map(|(seq, v)| (seq, known(v)))
         .collect())
+}
+
+fn push_entries<'de, D>(d: D) -> std::result::Result<Vec<Option<Gossip>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(raw.into_iter().map(known).collect())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -680,15 +747,7 @@ impl Node {
         render: bool,
     ) -> Result<Signed<WatchRequest>> {
         let url = target::canonical_url(url)?;
-        if every_secs < MIN_REQUEST_EVERY_SECS {
-            bail!(
-                "the network accepts intervals of at least {} minutes",
-                MIN_REQUEST_EVERY_SECS / 60
-            );
-        }
-        if duration_ms > MAX_REQUEST_MS {
-            bail!("requests can run for at most 30 days");
-        }
+        check_request(every_secs, duration_ms)?;
         let now = now_ms();
         let r = Signed::sign(
             WatchRequest {
@@ -705,6 +764,22 @@ impl Node {
             bail!("request rejected (too many active requests?)");
         }
         Ok(r)
+    }
+
+    /// `request_watch`, in place of this node's earlier requests for the
+    /// URL. They are only withdrawn once the new one is known to be valid.
+    /// Returns the request and how many it replaced.
+    pub fn replace_request(
+        &self,
+        url: &str,
+        every_secs: u64,
+        duration_ms: i64,
+        render: bool,
+    ) -> Result<(Signed<WatchRequest>, usize)> {
+        check_request(every_secs, duration_ms)?;
+        let replaced = self.cancel_requests(url)?;
+        let r = self.request_watch(url, every_secs, duration_ms, render)?;
+        Ok((r, replaced))
     }
 
     /// Withdraw this node's active requests for a URL. Returns how many.
@@ -991,8 +1066,10 @@ impl Node {
             let n = page.messages.len();
             for (seq, g) in page.messages {
                 after = after.max(seq);
-                if self.ingest(g)? {
-                    stats.gossip_in += 1;
+                if let Some(g) = g {
+                    if self.ingest(g)? {
+                        stats.gossip_in += 1;
+                    }
                 }
             }
             if n < GOSSIP_PAGE as usize {
@@ -1011,19 +1088,8 @@ impl Node {
             let last = batch.last().map(|(s, _)| *s).unwrap_or(sent_to);
             let messages: Vec<Gossip> = batch.into_iter().map(|(_, g)| g).collect();
             let n = messages.len();
-            let envelope = Signed::sign(
-                PushEnvelope {
-                    from: self.key.public(),
-                    to: peer.key,
-                    sent_at_ms: now_ms(),
-                    payload: payload_digest(&messages),
-                },
-                &self.key,
-            )?;
-            let resp: PushResponse = self
-                .net
-                .post_json(&join(ep, "/v1/gossip"), &PushRequest { envelope, messages })
-                .await?;
+            let req = PushRequest::sign(&self.key, peer.key, now_ms(), messages)?;
+            let resp: PushResponse = self.net.post_json(&join(ep, "/v1/gossip"), &req).await?;
             stats.gossip_out += resp.accepted;
             if let Some(o) = resp.observation {
                 if o.body.subject == self.key.public() && o.body.observer == peer.key {
@@ -1377,17 +1443,30 @@ impl Node {
 
     /// Handle a push: ingest the messages and, if the envelope proves who
     /// sent them, return a receipt of the address they came from.
-    pub fn receive_push(&self, req: PushRequest, from_ip: IpAddr) -> Result<PushResponse> {
+    pub fn receive_push(&self, mut req: PushRequest, from_ip: IpAddr) -> Result<PushResponse> {
         let now = now_ms();
+        if req.ids.is_empty() {
+            // From a 2.0.0 witness: no IDs, and only messages this version
+            // knows.
+            req.ids = req.messages.iter().flatten().map(Gossip::id).collect();
+        }
         let env = &req.envelope;
+        // The IDs of messages this node can't read are taken on trust: it
+        // skips those messages anyway.
         let authentic = env.verify().is_ok()
             && env.body.to == self.key.public()
             && env.body.from != self.key.public()
-            && (env.body.sent_at_ms - now).abs() <= SKEW_MS
-            && env.body.payload == payload_digest(&req.messages)
+            && env.body.sent_at_ms.abs_diff(now) <= SKEW_MS as u64
+            && req.ids.len() == req.messages.len()
+            && req
+                .messages
+                .iter()
+                .zip(&req.ids)
+                .all(|(m, id)| m.as_ref().is_none_or(|g| g.id() == *id))
+            && env.body.payload == payload_digest_of_ids(&req.ids)
             && self.fresh_envelope(env.id(), now);
         let mut accepted = 0;
-        for g in req.messages {
+        for g in req.messages.into_iter().flatten() {
             if self.ingest(g)? {
                 accepted += 1;
             }
@@ -1448,14 +1527,32 @@ mod tests {
     }
 
     #[test]
-    fn unknown_message_kinds_are_skipped() {
+    fn malformed_outbox_entries_are_skipped() {
         let json = r#"{"messages": [
-            [1, {"type": "from_the_future", "x": 1}],
-            [2, {"type": "beacon", "round": 1, "signature": "00"}]
+            [1, {"type": "beacon", "round": 1, "signature": "00"}],
+            [2.5, {"type": "beacon", "round": 2, "signature": "00"}],
+            ["3", {"type": "beacon", "round": 3, "signature": "00"}],
+            [4],
+            [5, {"type": "from_the_future", "x": 1}]
         ]}"#;
         let page: GossipPage = serde_json::from_str(json).unwrap();
-        assert_eq!(page.messages.len(), 1);
-        assert_eq!(page.messages[0].0, 2);
+        let seqs: Vec<i64> = page.messages.iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, [1, 5]);
+    }
+
+    #[test]
+    fn unknown_message_kinds_are_skipped() {
+        let json = r#"{"messages": [
+            [1, {"type": "beacon", "round": 1, "signature": "00"}],
+            [2, {"type": "from_the_future", "x": 1}]
+        ]}"#;
+        let page: GossipPage = serde_json::from_str(json).unwrap();
+        // Skipped, but counted: the next pull starts after both.
+        assert_eq!(page.messages.len(), 2);
+        assert_eq!(page.messages[0].0, 1);
+        assert!(matches!(page.messages[0].1, Some(Gossip::Beacon(_))));
+        assert_eq!(page.messages[1].0, 2);
+        assert!(page.messages[1].1.is_none());
     }
 
     #[test]

@@ -338,8 +338,12 @@ async fn gossip_pull(
 ) -> ApiResult<GossipPage> {
     let after = q.get("after").copied().unwrap_or(0);
     let limit = q.get("limit").copied().unwrap_or(500).clamp(1, 500) as u32;
+    let messages = node.store.gossip_since(after, limit)?;
     Ok(Json(GossipPage {
-        messages: node.store.gossip_since(after, limit)?,
+        messages: messages
+            .into_iter()
+            .map(|(seq, g)| (seq, Some(g)))
+            .collect(),
     }))
 }
 

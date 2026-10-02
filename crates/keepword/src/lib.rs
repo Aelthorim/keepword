@@ -56,6 +56,10 @@ pub struct Outcome {
     pub record: Record,
     pub tree_head: SignedTreeHead,
     pub previous: Option<Digest>,
+    /// Whether `previous` was normalized the same way, so that `change`
+    /// compares the two. After a normalizer upgrade or a change of site
+    /// rules, it wasn't.
+    pub compared: bool,
     pub change: Option<ChangeInfo>,
 }
 
@@ -124,6 +128,9 @@ impl Node {
     }
 
     pub fn init(dir: &Path, config: &Config) -> Result<Keypair> {
+        // Before anything is written: a node whose config doesn't load
+        // can't be fixed with `keepword config`, nor initialized again.
+        config.validate()?;
         std::fs::create_dir_all(dir)?;
         if dir.join(config::CONFIG_FILE).exists() {
             bail!("{} is already initialized", dir.display());
@@ -228,6 +235,9 @@ impl Node {
 
         let prev = self.store.latest(&signed.attestation.url, c.method)?;
         let (record, tree_head) = self.store.commit(&signed, &self.key, now_ms())?;
+        let compared = prev.as_ref().is_some_and(|p| {
+            keepword_core::quorum::comparable(&p.signed.attestation, &record.signed.attestation)
+        });
         let change = match &prev {
             Some(p) => self.detect_change(p, &record)?,
             None => None,
@@ -236,6 +246,7 @@ impl Node {
             record,
             tree_head,
             previous: prev.map(|p| p.id),
+            compared,
             change,
         })
     }
@@ -387,12 +398,14 @@ impl Node {
     }
 
     /// The site rules behind an attestation's normalizer profile, if the
-    /// current configuration still produces that profile.
+    /// current configuration still produces that profile, with this
+    /// normalizer version or an earlier one.
     fn rules_for_profile(&self, a: &Attestation) -> Option<SiteRules> {
         let n = a.norm?;
         let url = Url::parse(&a.final_url).ok()?;
         let rules = self.normalizer.rules_for(&url);
-        (keepword_normalize::profile(rules) == n.profile)
+        (1..=keepword_normalize::VERSION)
+            .any(|v| keepword_normalize::profile_at(v, rules) == n.profile)
             .then(|| rules.cloned())
             .flatten()
     }
@@ -470,21 +483,25 @@ impl Node {
         let heads = self.store.tree_heads()?;
         let me = self.key.public();
 
+        // A head per capture: roots and proofs from the whole log each time
+        // would take time in the square of its size.
+        let mut tree = merkle::MerkleCache::new();
+        for leaf in &leaves {
+            tree.push(*leaf);
+        }
         let mut bad_heads = 0;
         for (i, h) in heads.iter().enumerate() {
             let ok = h.verify().is_ok()
                 && h.head.log == me
-                && h.head.size as usize <= leaves.len()
-                && merkle::root(&leaves[..h.head.size as usize]) == h.head.root;
+                && tree.root(h.head.size as usize) == Some(h.head.root);
             if !ok {
                 bad_heads += 1;
             }
             if let Some(next) = heads.get(i + 1) {
-                let proof = merkle::consistency_proof(
-                    &leaves[..next.head.size as usize],
-                    h.head.size as usize,
-                )
-                .unwrap_or_default();
+                // None, when leaves are missing: that head is bad already.
+                let proof = tree
+                    .consistency_proof(h.head.size as usize, next.head.size as usize)
+                    .unwrap_or_default();
                 if h.verify_extension(next, &proof).is_err() {
                     bad_heads += 1;
                 }

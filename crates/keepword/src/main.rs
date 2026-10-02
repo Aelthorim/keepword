@@ -587,7 +587,15 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                     if cli.json {
                         print_json(&r)?;
                     } else {
-                        print_report(&r);
+                        print_checks(&r);
+                        println!(
+                            "\n{}",
+                            if r.ok() {
+                                "AUDIT PASSED"
+                            } else {
+                                "AUDIT FAILED"
+                            }
+                        );
                     }
                     return Ok(r.ok());
                 }
@@ -883,9 +891,8 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
             ..
         } => {
             let node = Node::open(&dir)?;
-            let replaced = node.cancel_requests(&url)?;
-            let r =
-                node.request_watch(&url, every.as_secs(), duration.as_millis() as i64, render)?;
+            let duration_ms = i64::try_from(duration.as_millis()).unwrap_or(i64::MAX);
+            let (r, replaced) = node.replace_request(&url, every.as_secs(), duration_ms, render)?;
             println!(
                 "request {} for {} every {} until {}; it spreads on the next sync",
                 r.id().short(),
@@ -943,6 +950,9 @@ async fn run(cli: Cli, dir: PathBuf) -> Result<bool> {
                 },
                 AnchorCmd::Upgrade => {
                     let r = node.anchor_upgrade().await?;
+                    for e in &r.errors {
+                        eprintln!("{e}");
+                    }
                     println!(
                         "checked {} pending anchors: {} upgraded, {} confirmed in Bitcoin",
                         r.checked, r.upgraded, r.confirmed
@@ -1211,6 +1221,10 @@ fn print_outcome(o: &Outcome) {
     );
     match (&o.previous, &o.change) {
         (None, _) => println!("first capture of this URL"),
+        (Some(p), None) if !o.compared => println!(
+            "not compared with {}, normalized with another normalizer version or site rules",
+            p.short()
+        ),
         (Some(p), None) => println!("unchanged since {}", p.short()),
         (Some(p), Some(c)) => {
             println!("CHANGED since {}: {}", p.short(), c.summary);
@@ -1238,7 +1252,7 @@ fn print_attestation_header(b: &Bundle) {
     println!();
 }
 
-fn print_report(r: &Report) {
+fn print_checks(r: &Report) {
     for c in &r.checks {
         let tag = match c.status {
             Status::Pass => "ok  ",
@@ -1247,6 +1261,11 @@ fn print_report(r: &Report) {
         };
         println!("  [{tag}] {:<14} {}", c.name, c.detail);
     }
+}
+
+/// An attestation's or bundle's report, with what it shows.
+fn print_report(r: &Report) {
+    print_checks(r);
     let s = r.summary();
     match s.strength {
         None => println!("\nVERIFICATION FAILED"),

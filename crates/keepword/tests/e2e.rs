@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use keepword::Node;
 use keepword::config::Config;
 use keepword_core::bundle::{Bundle, Content, Status};
+use keepword_core::now_ms;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -215,4 +216,154 @@ async fn refuses_private_targets_by_default() {
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("non-public"), "{err:#}");
+}
+
+/// The audit checks a store that may have been tampered with: log leaves
+/// missing under a tree head are a failed check, not a crash.
+#[tokio::test]
+async fn audit_reports_missing_leaves() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), true);
+    for i in 0..3 {
+        *body.lock().unwrap() = PAGE.replace("never", &format!("never ({i})"));
+        node.capture(&format!("{base}/page"), false).await.unwrap();
+    }
+    assert!(node.audit().unwrap().ok());
+    rusqlite::Connection::open(tmp.path().join("index.sqlite"))
+        .unwrap()
+        .execute(
+            "DELETE FROM log_leaves WHERE idx = (SELECT MAX(idx) FROM log_leaves)",
+            [],
+        )
+        .unwrap();
+    let r = node.audit().unwrap();
+    assert!(!r.ok());
+    assert!(
+        r.checks
+            .iter()
+            .any(|c| c.name == "tree heads" && c.status == Status::Fail),
+        "{r:?}"
+    );
+}
+
+/// `keepword init` with a bad flag: nothing is written, so it can be run
+/// again (an invalid config would stop every other command, `config` too).
+#[test]
+fn init_writes_no_config_it_cant_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("node");
+    let mut cfg = Config::default();
+    cfg.vantage.country = Some("DEU".into());
+    assert!(Node::init(&dir, &cfg).is_err());
+    assert!(!dir.exists());
+    cfg.vantage.country = Some("DE".into());
+    Node::init(&dir, &cfg).unwrap();
+    Node::open(&dir).unwrap();
+}
+
+/// `keepword request` for a URL it already requested: the old request is
+/// only withdrawn for a valid new one.
+#[test]
+fn bad_request_replacements_keep_the_old_request() {
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), false);
+    let url = "https://example.org/terms";
+    let day = 86_400_000;
+    let active = || -> Vec<_> {
+        node.store
+            .requests_by(&node.key.public(), now_ms())
+            .unwrap()
+            .iter()
+            .map(|r| r.id())
+            .collect()
+    };
+    let (first, replaced) = node.replace_request(url, 600, day, false).unwrap();
+    assert_eq!(replaced, 0);
+    assert!(node.replace_request(url, 60, day, false).is_err());
+    assert!(node.replace_request(url, 600, 0, false).is_err());
+    assert!(node.replace_request(url, 600, 365 * day, false).is_err());
+    assert_eq!(active(), [first.id()]);
+    let (second, replaced) = node.replace_request(url, 1200, day, false).unwrap();
+    assert_eq!(replaced, 1);
+    assert_eq!(active(), [second.id()]);
+}
+
+/// Watch requests from the network can ask for any interval at least ten
+/// minutes long. The longest ones must not make a URL due every round.
+#[tokio::test]
+async fn the_longest_intervals_arent_due_every_round() {
+    let base = serve(Arc::new(Mutex::new(PAGE.to_string()))).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = Arc::new(node(tmp.path(), true));
+    let url = format!("{base}/page");
+    for every_secs in [1 << 62, u64::MAX] {
+        node.store
+            .watch_add(&url, every_secs, false, now_ms())
+            .unwrap();
+        assert_eq!(keepword::web::run_due(&node, |_| {}).await.unwrap(), 1);
+        assert_eq!(keepword::web::run_due(&node, |_| {}).await.unwrap(), 0);
+        node.store.watch_remove(&url).unwrap();
+    }
+}
+
+/// Bundles of captures made before a normalizer upgrade still carry the
+/// site rules they were normalized with, so the version that made them can
+/// re-run it.
+#[tokio::test]
+async fn bundles_from_before_a_normalizer_upgrade_keep_their_rules() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.capture.allow_private_addresses = true;
+    cfg.beacon.drand_url = None;
+    cfg.rules = vec![keepword_normalize::SiteRules {
+        host: "127.0.0.1".into(),
+        remove: vec![".meta".into()],
+        root: None,
+    }];
+    Node::init(tmp.path(), &cfg).unwrap();
+    let node = Node::open(tmp.path()).unwrap();
+    let now = node.capture(&format!("{base}/page"), false).await.unwrap();
+    // The same capture, as the previous normalizer version named it.
+    let mut a = now.record.signed.attestation.clone();
+    a.fetched_at_ms += 1;
+    a.norm.as_mut().unwrap().profile =
+        keepword_normalize::profile_at(keepword_normalize::VERSION - 1, Some(&cfg.rules[0]));
+    let (before, _) = node
+        .store
+        .commit(&a.sign(&node.key).unwrap(), &node.key, now_ms())
+        .unwrap();
+    for rec in [&now.record, &before] {
+        let content = node.bundle(rec, true).unwrap().content.unwrap();
+        assert_eq!(content.norm_rules.unwrap()["host"], "127.0.0.1");
+    }
+}
+
+/// After a normalizer upgrade or a change of site rules, a capture can't be
+/// compared with the one before: that doesn't make it unchanged.
+#[tokio::test]
+async fn captures_normalized_differently_arent_unchanged() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), true);
+    let url = format!("{base}/page");
+    assert!(!node.capture(&url, false).await.unwrap().compared);
+    let again = node.capture(&url, false).await.unwrap();
+    assert!(again.compared && again.change.is_none());
+    drop(node);
+    let mut cfg = Config::load(tmp.path()).unwrap();
+    cfg.rules = vec![keepword_normalize::SiteRules {
+        host: "127.0.0.1".into(),
+        remove: vec![".meta".into()],
+        root: None,
+    }];
+    cfg.save(tmp.path()).unwrap();
+    let node = Node::open(tmp.path()).unwrap();
+    let after = node.capture(&url, false).await.unwrap();
+    assert_eq!(after.previous, Some(again.record.id));
+    assert!(!after.compared && after.change.is_none());
 }
