@@ -14,7 +14,8 @@ version's normalizer. The normalizer is new, though, and captures only
 compare when they were normalized the same way: until every witness runs
 2.1.0, verdicts and rechecks draw on fewer witnesses, and a witness
 doesn't compare a URL's first capture after the upgrade with the one
-before. Upgrade every witness.
+before. A TLSNotary session needs both witnesses on 2.1.0. Upgrade every
+witness.
 
 ### Added
 
@@ -99,6 +100,25 @@ before. Upgrade every witness.
   capture** and pass the check that both happened within ten minutes: the
   subtraction wrapped around. Debug builds panicked on such bundles, and on
   pushes sent at such times.
+- **A TLSNotary session could hang for good.** One in six stalled
+  locally while the two witnesses set up MPC-TLS, and one CI run in
+  twenty. The stall was inside TLSNotary, which has since fixed its stream
+  multiplexer and replaced its executor; keepword-tlsn now builds against
+  that revision, where none of 800 sessions hung. Sessions there share
+  one thread pool, where each used to start a thread per CPU core.
+  The revision speaks a newer protocol: a 2.0.0 prover hangs on a 2.1.0
+  verifier, and a 2.1.0 prover gets an error from a 2.0.0 one.
+- **Notarization had no timeouts.** A verifier that went quiet left
+  `keepword-tlsn capture` waiting forever, and a prover that went quiet,
+  or never sent its hello, held a verifier's connection for as long as it
+  liked. Either side now gives up on a session after ten minutes, and on a
+  hello or a receipt lookup after 30 seconds. A session that fails or is
+  refused now closes its connection, and a refused prover still hears why.
+- **A flood of connections stopped `keepword-tlsn serve`.** Once it ran out
+  of file descriptors, at about a thousand open connections with the usual
+  limit of 1 024, accepting failed and the service exited. It now logs the
+  error and tries again a second later, and idle connections close within
+  30 seconds.
 
 ## [2.0.0] - 2026-09-30
 

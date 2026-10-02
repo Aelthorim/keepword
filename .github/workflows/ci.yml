@@ -26,6 +26,7 @@ jobs:
   # 1.95+). Release mode: MPC-TLS is slow unoptimized.
   tlsn:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: crates/keepword-tlsn

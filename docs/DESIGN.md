@@ -649,12 +649,14 @@ and compares them with the attestation. Fabricating a capture now needs two
 colluding witnesses.
 
 Costs and limits: an MPC-TLS session takes about a second locally for a
-small page, and grows with size (default cap 256 KiB received). TLS 1.2
-only, no compression, no redirects. The crate is a **separate Cargo
-workspace** pinned to a tlsn git revision: tlsn is pre-1.0, changes its API
-often, needs Rust 1.95+ and pulls a large MPC stack from git. The main
-workspace never builds it; the receipt format and its verification live in
-`keepword-core` and have no tlsn dependency.
+small page, and grows with size (default cap 256 KiB received). Either
+witness gives up on a session after ten minutes, and on a hello or a
+receipt lookup after 30 seconds. TLS 1.2 only, no compression, no
+redirects. The crate is a **separate Cargo workspace** pinned to a tlsn git
+revision: tlsn is pre-1.0, changes its API often, needs Rust 1.95+ and
+pulls a large MPC stack from git. The main workspace never builds it; the
+receipt format and its verification live in `keepword-core` and have no
+tlsn dependency.
 
 ```sh
 keepword-tlsn serve --addr 0.0.0.0:8482                  # on the notary witness
