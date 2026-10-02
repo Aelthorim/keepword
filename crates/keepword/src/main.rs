@@ -1221,6 +1221,10 @@ fn print_outcome(o: &Outcome) {
     );
     match (&o.previous, &o.change) {
         (None, _) => println!("first capture of this URL"),
+        (Some(p), None) if !o.compared => println!(
+            "not compared with {}, normalized with another normalizer version or site rules",
+            p.short()
+        ),
         (Some(p), None) => println!("unchanged since {}", p.short()),
         (Some(p), Some(c)) => {
             println!("CHANGED since {}: {}", p.short(), c.summary);

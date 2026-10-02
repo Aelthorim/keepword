@@ -235,9 +235,11 @@ matches an update notice ("Update:", "Last updated", "Correction",
 "Editor's note", "Stand:", "aktualisiert", "Korrektur", "Anmerkung der
 Redaktion", "mise à jour", …).
 Otherwise it is **silent**. Removing a correction notice does not count as
-disclosure. When the normalized text wasn't retained, a change is recorded
-but never labelled silent. A diff looks for the fewest changes for a
-second at most; after that, the rest of it shows as replaced.
+disclosure, nor does one the page already had: a line the diff removes as
+often as it adds was moved. When the normalized text wasn't retained, a
+change is recorded but never labelled silent. A diff looks for the fewest
+changes for a second at most; after that, the rest of it shows as
+replaced.
 
 ### Regression corpus
 

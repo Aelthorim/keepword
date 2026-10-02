@@ -88,14 +88,20 @@ impl Normalizer {
     }
 }
 
-/// Profile digest for a normalizer version and optional rules.
+/// Profile digest for this normalizer version and optional rules.
 pub fn profile(rules: Option<&SiteRules>) -> Digest {
+    profile_at(VERSION, rules)
+}
+
+/// Profile digest for normalizer `version` and optional rules: captures
+/// made before an upgrade name an earlier version.
+pub fn profile_at(version: u32, rules: Option<&SiteRules>) -> Digest {
     let rules_json = rules
         .map(|r| serde_json::to_string(r).expect("rules serialize"))
         .unwrap_or_default();
     Digest::tagged(
         "keepword norm-profile v1",
-        &[&VERSION.to_be_bytes(), rules_json.as_bytes()],
+        &[&version.to_be_bytes(), rules_json.as_bytes()],
     )
 }
 

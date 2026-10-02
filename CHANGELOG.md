@@ -5,6 +5,96 @@ follow [Semantic Versioning](https://semver.org): from 1.0.0 on, the
 evidence formats (attestations, logs, bundles) and the network protocol
 only change incompatibly in a new major version.
 
+## [2.1.0] - 2026-10-02
+
+Fixes from an end-to-end bug hunt, most of them for what a hostile page or
+peer could make a witness do, and a logo. 2.0.0 and 2.1.0 witnesses
+federate and verify each other's bundles, all but re-running the other
+version's normalizer. The normalizer is new, though, and captures only
+compare when they were normalized the same way: until every witness runs
+2.1.0, verdicts and rechecks draw on fewer witnesses, and a witness
+doesn't compare a URL's first capture after the upgrade with the one
+before. Upgrade every witness.
+
+### Added
+
+- **A logo:** a gold seal stamped with a quotation mark, for what a page
+  said, sealed. `docs/assets` has the seal on its own (`logo.svg`, and
+  `logo-512.png` for avatars) and with the name, for light and dark
+  backgrounds (`logo-wordmark.svg`, `logo-wordmark-white.svg`). The
+  banner and the social preview use it (`social-preview.svg` is the
+  source of `social-preview.png`), and the web UI shows it in its header
+  and as its tab icon.
+
+### Changed
+
+- **Normalized text is `keepword-norm/3`.** The normalizer has limits for
+  hostile pages now, and a link's text leaves out the links nested in it
+  (see Fixed), so such pages normalize differently. As every normalized
+  text starts with the version, every normalized hash changes.
+
+### Fixed
+
+- **A hostile page could crash a witness or keep it busy for days.** The
+  normalizer read pages recursively, so about 25 kB of nested tags
+  overflowed its stack and aborted the node. The HTML parser took time in
+  the square of how deep a page nests (minutes for a megabyte, days for
+  the 32 MiB a capture may have), formatting tags it reopens in every
+  paragraph made 160 kB of markup take 3.6 GB, and a link nested in links
+  repeated the text of every link inside it: a 1 MB page normalized to
+  4 GB. Pages are now read without recursion, tags nested more than 512
+  deep are ignored (their text is kept), a page's tree stops growing at
+  one node per two bytes, and a link's text leaves out the links inside
+  it.
+- **Diffs of big rewrites could run for days.** Finding the fewest changes
+  between two versions takes time in the square of the lines changed, two
+  minutes for 100 000. After a second, the rest now shows as replaced,
+  and a line a diff shows as both removed and added, such as an update
+  notice the page already had, no longer makes an edit disclosed.
+- **Gossip from newer versions could stop a node syncing with a peer.**
+  Pulls skip message kinds a node doesn't know, but a page of nothing
+  else didn't move the cursor past them, so the node asked for that page
+  forever. Pushes carrying them failed authentication, so their sender got
+  no observation receipt. Pulls now move past every message, and pushes
+  list the IDs of the messages they carry (2.0.0 witnesses ignore them).
+- **Watch requests for the longest intervals were due every round.** The
+  network takes requests for any interval from ten minutes up. Past
+  292 million years, the interval wrapped around in the scheduler, and
+  every witness assigned captured the URL every 15 seconds (debug builds
+  panicked). Such a watch is now never due again.
+- **`keepword log audit` panicked** when leaves were missing under a tree
+  head, which is what it is there to find, and took time in the square of
+  the log's size. It also ended with "VERIFICATION FAILED" when every
+  check passed; it now says whether the audit passed.
+- **One bad calendar or explorer answer stopped anchor upgrades.** A
+  calendar answering anything but a timestamp failed every upgrade, and a
+  failed block lookup discarded the proofs calendars had just completed.
+  Each calendar or explorer that fails is now logged, once a round, and
+  the rest go ahead.
+- **`keepword request` withdrew the old request before checking the new
+  one,** so a replacement the network refuses, such as `--every 1m`, left
+  the URL with no request at all.
+- **`keepword init` wrote configs it can't load,** for instance with
+  `--country DEU`. No command worked after that, not even `keepword config`
+  or `keepword init`. It now refuses them and writes nothing.
+- **`keepword config unset` didn't turn off drand or the block
+  explorer.** Left out of the file, `beacon.drand_url` and
+  `anchor.esplora_url` loaded as their defaults again, so the node kept
+  using api.drand.sh and blockstream.info, and tests meant to run offline
+  fetched drand beacons. Unset, they are now saved as "", which turns
+  them off. One unset with 2.0.0 is still missing from the file: unset it
+  again.
+- **A failed round of watches stopped `keepword serve`,** API and gossip
+  included, for instance when the database stayed busy for ten seconds.
+  It is now logged and retried, like a failed sync.
+- **A capture that couldn't be compared with the one before was
+  "unchanged"** in `keepword capture` and the watch log, after new site
+  rules for instance. They now say it wasn't compared.
+- **A bundle's TLSNotary receipt could be dated 292 million years from the
+  capture** and pass the check that both happened within ten minutes: the
+  subtraction wrapped around. Debug builds panicked on such bundles, and on
+  pushes sent at such times.
+
 ## [2.0.0] - 2026-09-30
 
 **Witness is now Keepword.** "Witness" is a crowded name, too hard to find
@@ -16,16 +106,6 @@ network of independent witnesses".
 The whole project changes name at once, protocol included, so this is a
 clean break: 2.0.0 nodes don't federate with 1.x nodes, and 1.x logs and
 bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
-
-### Added
-
-- **A logo:** a gold seal stamped with a quotation mark, for what a page
-  said, sealed. `docs/assets` has the seal on its own (`logo.svg`, and
-  `logo-512.png` for avatars) and with the name, for light and dark
-  backgrounds (`logo-wordmark.svg`, `logo-wordmark-white.svg`). The
-  banner and the social preview use it (`social-preview.svg` is the
-  source of `social-preview.png`), and the web UI shows it in its header
-  and as its tab icon.
 
 ### Changed
 
@@ -50,68 +130,13 @@ bundles don't verify with 2.0.0. Nothing carries over from a 1.x node.
   and hash tag starts with `keepword` instead of `witness`
   (`keepword/attestation/v2`, `keepword/tree-head/v1`,
   `keepword url-key v1`, …), evidence bundles are `keepword-bundle/1`,
-  normalized text starts with `keepword-norm/3`, so normalized hashes
+  normalized text starts with `keepword-norm/2`, so normalized hashes
   change too, and a WARC export's attestation record is
   `application/vnd.keepword.attestation+json`.
 - The default User-Agent is `Mozilla/5.0 (compatible; Keepword/2.0.0;
   +https://github.com/keepword-net/keepword)`, and peers see `keepword/2.0.0`.
 - Release archives are `keepword-vX.Y.Z-TARGET.tar.gz`. The web UI, the
   banner and the social preview say Keepword.
-
-### Fixed
-
-- **A hostile page could crash a witness or keep it busy for days.** The
-  normalizer read pages recursively, so about 25 kB of nested tags
-  overflowed its stack and aborted the node. The HTML parser took time in
-  the square of how deep a page nests (minutes for a megabyte, days for
-  the 32 MiB a capture may have), formatting tags it reopens in every
-  paragraph made 160 kB of markup take 3.6 GB, and a link nested in links
-  repeated the text of every link inside it: a 1 MB page normalized to
-  4 GB. Pages are now read without recursion, tags nested more than 512
-  deep are ignored (their text is kept), a page's tree stops growing at
-  one node per two bytes, and a link's text leaves out the links inside
-  it. Normalized text changes for such pages, hence `keepword-norm/3`.
-- **Diffs of big rewrites could run for days.** Finding the fewest changes
-  between two versions takes time in the square of the lines changed, two
-  minutes for 100 000. After a second, the rest now shows as replaced.
-- **Gossip from newer versions could stop a node syncing with a peer.**
-  Pulls skip message kinds a node doesn't know, but a page of nothing
-  else didn't move the cursor past them, so the node asked for that page
-  forever. Pushes carrying them failed authentication, so their sender got
-  no observation receipt. Pulls now move past every message, and pushes
-  list the IDs of the messages they carry.
-- **Watch requests for the longest intervals were due every round.** The
-  network takes requests for any interval from ten minutes up. Past
-  292 million years, the interval wrapped around in the scheduler, and
-  every witness assigned captured the URL every 15 seconds (debug builds
-  panicked). Such a watch is now never due again.
-- **`keepword log audit` panicked** when leaves were missing under a tree
-  head, which is what it is there to find, and took time in the square of
-  the log's size. It also ended with "VERIFICATION FAILED" when every
-  check passed; it now says whether the audit passed.
-- **One bad calendar or explorer answer stopped anchor upgrades.** A
-  calendar answering anything but a timestamp failed every upgrade, and a
-  failed block lookup discarded the proofs calendars had just completed.
-  Each failure is now logged, and the rest go ahead.
-- **`keepword request` withdrew the old request before checking the new
-  one,** so a replacement the network refuses, such as `--every 1m`, left
-  the URL with no request at all.
-- **`keepword init` wrote configs it can't load,** for instance with
-  `--country DEU`. No command worked after that, not even `keepword config`
-  or `keepword init`. It now refuses them and writes nothing.
-- **`keepword config unset` didn't turn off drand or the block
-  explorer.** Left out of the file, `beacon.drand_url` and
-  `anchor.esplora_url` loaded as their defaults again, so the node kept
-  using api.drand.sh and blockstream.info, and tests meant to run offline
-  fetched drand beacons. Unset, they are now saved as "", which turns
-  them off.
-- **A failed round of watches stopped `keepword serve`,** API and gossip
-  included, for instance when the database stayed busy for ten seconds.
-  It is now logged and retried, like a failed sync.
-- **A bundle's TLSNotary receipt could be dated 292 million years from the
-  capture** and pass the check that both happened within ten minutes: the
-  subtraction wrapped around. Debug builds panicked on such bundles, and on
-  pushes sent at such times.
 
 ### Upgrading from Witness 1.x
 
@@ -376,6 +401,7 @@ produce evidence anyone can verify offline.
 - A private web UI with history, diffs, verdicts, alerts and the network.
 - Licensed under the GNU AGPL v3.
 
+[2.1.0]: https://github.com/keepword-net/keepword/releases/tag/v2.1.0
 [2.0.0]: https://github.com/keepword-net/keepword/releases/tag/v2.0.0
 [1.2.0]: https://github.com/keepword-net/keepword/releases/tag/v1.2.0
 [1.1.1]: https://github.com/keepword-net/keepword/releases/tag/v1.1.1

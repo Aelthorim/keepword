@@ -21,7 +21,7 @@ use keepword_core::assign::{self, Candidate, DiversityPolicy};
 use keepword_core::beacon::{self, epoch_of};
 use keepword_core::net::{
     Alert, AlertKind, Cosignature, Descriptor, Gossip, Observation, PushEnvelope, WatchCancel,
-    WatchRequest, payload_digest,
+    WatchRequest, payload_digest, payload_digest_of_ids,
 };
 use keepword_core::statement::Signed;
 use keepword_core::{
@@ -156,7 +156,9 @@ pub struct GossipPage {
 pub struct PushRequest {
     pub envelope: Signed<PushEnvelope>,
     /// The messages' IDs, which the envelope's payload hashes: a receiver
-    /// can't work out the ID of a message of a kind it doesn't know.
+    /// can't work out the ID of a message of a kind it doesn't know. 2.0.0
+    /// witnesses don't send them, nor messages a later version doesn't know.
+    #[serde(default)]
     pub ids: Vec<Digest>,
     /// `None` for a kind this version doesn't know.
     #[serde(deserialize_with = "push_entries")]
@@ -171,19 +173,18 @@ impl PushRequest {
         sent_at_ms: i64,
         messages: Vec<Gossip>,
     ) -> Result<Self> {
-        let ids: Vec<Digest> = messages.iter().map(Gossip::id).collect();
         let envelope = Signed::sign(
             PushEnvelope {
                 from: key.public(),
                 to,
                 sent_at_ms,
-                payload: payload_digest(&ids),
+                payload: payload_digest(&messages),
             },
             key,
         )?;
         Ok(PushRequest {
             envelope,
-            ids,
+            ids: messages.iter().map(Gossip::id).collect(),
             messages: messages.into_iter().map(Some).collect(),
         })
     }
@@ -217,8 +218,14 @@ fn outbox_entries<'de, D>(d: D) -> std::result::Result<Vec<(i64, Option<Gossip>)
 where
     D: serde::Deserializer<'de>,
 {
-    let raw = Vec::<(i64, serde_json::Value)>::deserialize(d)?;
-    Ok(raw.into_iter().map(|(seq, v)| (seq, known(v))).collect())
+    let raw = Vec::<serde_json::Value>::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        // One that isn't `[sequence number, message]` at all is dropped,
+        // not the page with it.
+        .filter_map(|e| serde_json::from_value::<(i64, serde_json::Value)>(e).ok())
+        .map(|(seq, v)| (seq, known(v)))
+        .collect())
 }
 
 fn push_entries<'de, D>(d: D) -> std::result::Result<Vec<Option<Gossip>>, D::Error>
@@ -1436,8 +1443,13 @@ impl Node {
 
     /// Handle a push: ingest the messages and, if the envelope proves who
     /// sent them, return a receipt of the address they came from.
-    pub fn receive_push(&self, req: PushRequest, from_ip: IpAddr) -> Result<PushResponse> {
+    pub fn receive_push(&self, mut req: PushRequest, from_ip: IpAddr) -> Result<PushResponse> {
         let now = now_ms();
+        if req.ids.is_empty() {
+            // From a 2.0.0 witness: no IDs, and only messages this version
+            // knows.
+            req.ids = req.messages.iter().flatten().map(Gossip::id).collect();
+        }
         let env = &req.envelope;
         // The IDs of messages this node can't read are taken on trust: it
         // skips those messages anyway.
@@ -1451,7 +1463,7 @@ impl Node {
                 .iter()
                 .zip(&req.ids)
                 .all(|(m, id)| m.as_ref().is_none_or(|g| g.id() == *id))
-            && env.body.payload == payload_digest(&req.ids)
+            && env.body.payload == payload_digest_of_ids(&req.ids)
             && self.fresh_envelope(env.id(), now);
         let mut accepted = 0;
         for g in req.messages.into_iter().flatten() {
@@ -1512,6 +1524,20 @@ mod tests {
         let d = node.descriptor();
         assert!(now_ms() - d.body.issued_at_ms < 60_000);
         d.verify().unwrap();
+    }
+
+    #[test]
+    fn malformed_outbox_entries_are_skipped() {
+        let json = r#"{"messages": [
+            [1, {"type": "beacon", "round": 1, "signature": "00"}],
+            [2.5, {"type": "beacon", "round": 2, "signature": "00"}],
+            ["3", {"type": "beacon", "round": 3, "signature": "00"}],
+            [4],
+            [5, {"type": "from_the_future", "x": 1}]
+        ]}"#;
+        let page: GossipPage = serde_json::from_str(json).unwrap();
+        let seqs: Vec<i64> = page.messages.iter().map(|(s, _)| *s).collect();
+        assert_eq!(seqs, [1, 5]);
     }
 
     #[test]

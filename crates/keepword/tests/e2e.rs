@@ -307,3 +307,63 @@ async fn the_longest_intervals_arent_due_every_round() {
         node.store.watch_remove(&url).unwrap();
     }
 }
+
+/// Bundles of captures made before a normalizer upgrade still carry the
+/// site rules they were normalized with, so the version that made them can
+/// re-run it.
+#[tokio::test]
+async fn bundles_from_before_a_normalizer_upgrade_keep_their_rules() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = Config::default();
+    cfg.capture.allow_private_addresses = true;
+    cfg.beacon.drand_url = None;
+    cfg.rules = vec![keepword_normalize::SiteRules {
+        host: "127.0.0.1".into(),
+        remove: vec![".meta".into()],
+        root: None,
+    }];
+    Node::init(tmp.path(), &cfg).unwrap();
+    let node = Node::open(tmp.path()).unwrap();
+    let now = node.capture(&format!("{base}/page"), false).await.unwrap();
+    // The same capture, as the previous normalizer version named it.
+    let mut a = now.record.signed.attestation.clone();
+    a.fetched_at_ms += 1;
+    a.norm.as_mut().unwrap().profile =
+        keepword_normalize::profile_at(keepword_normalize::VERSION - 1, Some(&cfg.rules[0]));
+    let (before, _) = node
+        .store
+        .commit(&a.sign(&node.key).unwrap(), &node.key, now_ms())
+        .unwrap();
+    for rec in [&now.record, &before] {
+        let content = node.bundle(rec, true).unwrap().content.unwrap();
+        assert_eq!(content.norm_rules.unwrap()["host"], "127.0.0.1");
+    }
+}
+
+/// After a normalizer upgrade or a change of site rules, a capture can't be
+/// compared with the one before: that doesn't make it unchanged.
+#[tokio::test]
+async fn captures_normalized_differently_arent_unchanged() {
+    let body = Arc::new(Mutex::new(PAGE.to_string()));
+    let base = serve(body.clone()).await;
+    let tmp = tempfile::tempdir().unwrap();
+    let node = node(tmp.path(), true);
+    let url = format!("{base}/page");
+    assert!(!node.capture(&url, false).await.unwrap().compared);
+    let again = node.capture(&url, false).await.unwrap();
+    assert!(again.compared && again.change.is_none());
+    drop(node);
+    let mut cfg = Config::load(tmp.path()).unwrap();
+    cfg.rules = vec![keepword_normalize::SiteRules {
+        host: "127.0.0.1".into(),
+        remove: vec![".meta".into()],
+        root: None,
+    }];
+    cfg.save(tmp.path()).unwrap();
+    let node = Node::open(tmp.path()).unwrap();
+    let after = node.capture(&url, false).await.unwrap();
+    assert_eq!(after.previous, Some(again.record.id));
+    assert!(!after.compared && after.change.is_none());
+}

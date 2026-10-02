@@ -120,9 +120,9 @@ impl Tracer for Count {
 }
 
 /// The tree builder, minus the start tags that would take its state past
-/// [`MAX_PARSER_STATE`] and the end tags that would have closed them (their
-/// content stays, in the element they would have nested in), and minus
-/// everything after the tree reaches `max_nodes`.
+/// [`MAX_PARSER_STATE`] and, while it stays there, the end tags that would
+/// have closed them (their content stays, in the element they would have
+/// nested in), and minus everything after the tree reaches `max_nodes`.
 struct Bounded {
     tb: TreeBuilder<NodeId, Html>,
     dropped: HashMap<LocalName, usize>,
@@ -151,20 +151,22 @@ impl TokenSink for Bounded {
             ..
         }) = &token
         {
-            match kind {
-                TagKind::StartTag if !opens_nothing(name) && self.state() >= MAX_PARSER_STATE => {
+            let opens = *kind == TagKind::StartTag && !opens_nothing(name);
+            if opens || (*kind == TagKind::EndTag && !self.dropped.is_empty()) {
+                if self.state() < MAX_PARSER_STATE {
+                    // Back below the bound, the elements dropped at it would
+                    // have been closed by now: their names mustn't take the
+                    // end tags of later elements.
+                    self.dropped.clear();
+                } else if opens {
                     if !self_closing {
                         *self.dropped.entry(name.clone()).or_default() += 1;
                     }
                     return TokenSinkResult::Continue;
+                } else if let Some(n) = self.dropped.get_mut(name).filter(|n| **n > 0) {
+                    *n -= 1;
+                    return TokenSinkResult::Continue;
                 }
-                TagKind::EndTag => {
-                    if let Some(n) = self.dropped.get_mut(name).filter(|n| **n > 0) {
-                        *n -= 1;
-                        return TokenSinkResult::Continue;
-                    }
-                }
-                TagKind::StartTag => {}
             }
         }
         self.tb.process_token(token, line)
@@ -523,6 +525,21 @@ mod tests {
         );
         let out = normalize(&html, &base(), None, 0);
         assert_eq!(out.last().map(String::as_str), Some("p: after"), "{out:?}");
+    }
+
+    #[test]
+    fn dropped_tags_dont_outlast_the_bound() {
+        // The <div> past the bound is never closed. Back below the bound,
+        // it mustn't take the end tag of a later div: that div would stay
+        // open around everything after it, hidden here.
+        let n = 600;
+        let html = format!(
+            "<body>{}<div>deep{}<div hidden>secret</div><p>after",
+            "<section>".repeat(n),
+            "</section>".repeat(n)
+        );
+        let out = normalize(&html, &base(), None, 0);
+        assert_eq!(out, ["text: deep", "p: after"]);
     }
 
     #[test]

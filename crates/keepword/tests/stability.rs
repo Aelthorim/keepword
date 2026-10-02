@@ -359,7 +359,7 @@ async fn pushes_with_new_message_kinds_get_receipts() {
     ids.push(keepword_core::Digest::of(b"a message from the future"));
     let envelope = Signed::sign(
         keepword_core::net::PushEnvelope {
-            payload: keepword_core::net::payload_digest(&ids),
+            payload: keepword_core::net::payload_digest_of_ids(&ids),
             ..req.envelope.body.clone()
         },
         &newer,
@@ -385,4 +385,63 @@ async fn pushes_with_new_message_kinds_get_receipts() {
     assert_eq!(resp.accepted, 1);
     let receipt = resp.observation.expect("a receipt");
     assert_eq!(receipt.body.subject, newer.public());
+}
+
+/// 2.0.0 witnesses push without the messages' IDs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pushes_from_2_0_0_witnesses_get_receipts() {
+    let node = spawn(64501, vec![]).await;
+    let older = Keypair::generate().unwrap();
+    let known = Gossip::Descriptor(descriptor(&older, "https://older.example"));
+    let req = PushRequest::sign(&older, node.node.key.public(), now_ms(), vec![known]).unwrap();
+    let mut body = serde_json::to_value(&req).unwrap();
+    body.as_object_mut().unwrap().remove("ids");
+    let resp = reqwest::Client::new()
+        .post(format!("{}/v1/gossip", node.endpoint))
+        .header("content-type", "application/json")
+        .body(serde_json::to_vec(&body).unwrap())
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let resp: PushResponse = serde_json::from_slice(&resp.bytes().await.unwrap()).unwrap();
+    assert_eq!(resp.accepted, 1);
+    let receipt = resp.observation.expect("a receipt");
+    assert_eq!(receipt.body.subject, older.public());
+}
+
+/// A push must list its messages' IDs, where the receiver can work them
+/// out; otherwise it isn't authentic and earns no receipt.
+#[test]
+fn pushes_with_wrong_ids_get_no_receipt() {
+    let (_d, node) = new_node();
+    let peer = Keypair::generate().unwrap();
+    let msg = Gossip::Descriptor(descriptor(&peer, "https://peer.example"));
+    let push = |ids: Vec<keepword_core::Digest>, messages: Vec<Option<Gossip>>| {
+        let envelope = Signed::sign(
+            keepword_core::net::PushEnvelope {
+                from: peer.public(),
+                to: node.key.public(),
+                sent_at_ms: now_ms(),
+                payload: keepword_core::net::payload_digest_of_ids(&ids),
+            },
+            &peer,
+        )
+        .unwrap();
+        let req = PushRequest {
+            envelope,
+            ids,
+            messages,
+        };
+        node.receive_push(req, "198.51.100.7".parse().unwrap())
+            .unwrap()
+            .observation
+    };
+    let other = keepword_core::Digest::of(b"another message");
+    assert!(push(vec![other], vec![Some(msg.clone())]).is_none());
+    assert!(push(vec![msg.id(), other], vec![Some(msg.clone())]).is_none());
+    // No IDs, as from 2.0.0, with a message the receiver can't read.
+    assert!(push(vec![], vec![Some(msg.clone()), None]).is_none());
+    assert!(push(vec![msg.id()], vec![Some(msg)]).is_some());
 }

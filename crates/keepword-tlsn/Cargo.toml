@@ -1,7 +1,7 @@
 [package]
 name = "keepword-tlsn"
 description = "TLSNotary proof tier for Keepword: a second witness notarizes the TLS session of a capture"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 # tlsn requires a recent toolchain.
 rust-version = "1.95"

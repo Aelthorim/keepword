@@ -1,5 +1,6 @@
 //! Diffs between normalized captures, and silent-edit classification.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -78,6 +79,17 @@ pub fn diff(old: &str, new: &str) -> Option<Change> {
     let td = TextDiff::configure()
         .timeout(DIFF_TIMEOUT)
         .diff_lines(old, new);
+    // How many more times each line is inserted than deleted. A line the
+    // diff deletes as often as it inserts was only moved, or realigned once
+    // the deadline passed: a notice or date the page already had.
+    let mut net: HashMap<&str, isize> = HashMap::new();
+    for c in td.iter_all_changes() {
+        match c.tag() {
+            ChangeTag::Insert => *net.entry(c.value()).or_default() += 1,
+            ChangeTag::Delete => *net.entry(c.value()).or_default() -= 1,
+            ChangeTag::Equal => {}
+        }
+    }
     let mut ops = Vec::new();
     let (mut added, mut removed) = (0, 0);
     let mut reasons = Vec::new();
@@ -87,10 +99,16 @@ pub fn diff(old: &str, new: &str) -> Option<Change> {
             ChangeTag::Equal => OpTag::Equal,
             ChangeTag::Insert => {
                 added += 1;
-                if let Some(date) = line.strip_prefix("modified: ") {
-                    reasons.push(format!("modification date now {date}"));
-                } else if let Some(m) = UPDATE_NOTICE.find(&line) {
-                    reasons.push(format!("notice {:?}", m.as_str()));
+                let fresh = net.get_mut(c.value()).is_some_and(|n| {
+                    *n -= 1;
+                    *n >= 0
+                });
+                if fresh {
+                    if let Some(date) = line.strip_prefix("modified: ") {
+                        reasons.push(format!("modification date now {date}"));
+                    } else if let Some(m) = UPDATE_NOTICE.find(&line) {
+                        reasons.push(format!("notice {:?}", m.as_str()));
+                    }
                 }
                 OpTag::Insert
             }
@@ -164,6 +182,33 @@ mod tests {
         let c = diff(&a, &b).unwrap();
         assert_eq!((c.added, c.removed), (100_000, 100_000));
         assert!(c.is_silent());
+    }
+
+    #[test]
+    fn notices_the_page_already_had_dont_disclose() {
+        // Moved past lines that stayed.
+        let c = diff(
+            "p: Update: new figures\np: a\np: b\np: c\n",
+            "p: a\np: b\np: c, edited\np: Update: new figures\n",
+        )
+        .unwrap();
+        assert!(c.is_silent(), "{:?}", c.disclosure);
+        // Past the deadline, a notice in the middle of a rewrite can show
+        // as removed and added again.
+        let lines = |p: &str| -> String {
+            (0..100_000)
+                .map(|i| match i {
+                    50_000 => "p: Correction: an earlier version misspelled a name\n".into(),
+                    7 => "modified: 2026-10-01T10:00:00Z\n".into(),
+                    _ => format!("p: {p}{i}\n"),
+                })
+                .collect()
+        };
+        let c = diff(&lines("a"), &lines("b")).unwrap();
+        assert!(c.is_silent(), "{:?}", c.disclosure);
+        // A second copy is news.
+        let c = diff("p: Update: x\np: a\n", "p: Update: x\np: b\np: Update: x\n").unwrap();
+        assert!(!c.is_silent());
     }
 
     #[test]

@@ -297,7 +297,14 @@ impl Statement for PushEnvelope {
 }
 
 /// The envelope's `payload`: a hash over the pushed messages' IDs.
-pub fn payload_digest(ids: &[Digest]) -> Digest {
+pub fn payload_digest(messages: &[Gossip]) -> Digest {
+    let ids: Vec<Digest> = messages.iter().map(Gossip::id).collect();
+    payload_digest_of_ids(&ids)
+}
+
+/// [`payload_digest`] from the messages' IDs, for a receiver that can't
+/// work out the ID of a message of a kind it doesn't know.
+pub fn payload_digest_of_ids(ids: &[Digest]) -> Digest {
     let ids: Vec<u8> = ids.iter().flat_map(|id| id.0).collect();
     Digest::tagged("keepword push-payload v1", &[&ids])
 }

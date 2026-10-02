@@ -1,5 +1,7 @@
 //! Anchoring tree heads in Bitcoin through OpenTimestamps calendars.
 
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result, bail};
 use keepword_core::bundle::{Anchor, Bundle, Report, Status, anchor_digest};
 use keepword_core::now_ms;
@@ -18,7 +20,8 @@ pub struct UpgradeReport {
     pub checked: usize,
     pub upgraded: usize,
     pub confirmed: usize,
-    /// Calendars and explorers that failed; the rest went ahead.
+    /// The calendars and the explorer that failed, each once with its
+    /// first error; the rest went ahead.
     pub errors: Vec<String>,
 }
 
@@ -72,6 +75,10 @@ impl Node {
     /// Bitcoin attestation against the chain.
     pub async fn anchor_upgrade(&self) -> Result<UpgradeReport> {
         let mut rep = UpgradeReport::default();
+        // By calendar or explorer: the first error and how many anchors it
+        // failed. One that is down fails every pending anchor, every round.
+        let mut failed: BTreeMap<String, (String, usize)> = BTreeMap::new();
+        let mut fail = |source: String, e: String| failed.entry(source).or_insert((e, 0)).1 += 1;
         for mut row in self.store.anchors()? {
             if row.status == "confirmed" {
                 continue;
@@ -101,7 +108,7 @@ impl Node {
                     }
                     // Not in a block yet.
                     Err(e) if status_of(&e) == Some(404) => {}
-                    Err(e) => rep.errors.push(format!("calendar {uri}: {e:#}")),
+                    Err(e) => fail(format!("calendar {uri}"), format!("{e:#}")),
                 }
             }
             if changed {
@@ -124,13 +131,23 @@ impl Node {
                             break;
                         }
                         Ok(false) => {}
-                        Err(e) => rep.errors.push(format!("block {height}: {e:#}")),
+                        Err(e) => fail(
+                            format!("explorer {esplora}"),
+                            format!("block {height}: {e:#}"),
+                        ),
                     }
                 }
             }
             row.updated_at = now_ms();
             self.store.anchor_upsert(&row)?;
         }
+        rep.errors = failed
+            .into_iter()
+            .map(|(source, (e, n))| match n {
+                1 => format!("{source}: {e}"),
+                n => format!("{source}: {e} ({n} anchors)"),
+            })
+            .collect();
         Ok(rep)
     }
 

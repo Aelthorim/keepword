@@ -40,6 +40,7 @@ pub async fn run_due(node: &Arc<Node>, log: impl Fn(String)) -> anyhow::Result<u
                     Some(c) if c.silent => format!("SILENT EDIT: {}", c.summary),
                     Some(c) => format!("changed: {}", c.summary),
                     None if o.previous.is_none() => "first capture".into(),
+                    None if !o.compared => "not compared, normalized differently before".into(),
                     None => "unchanged".into(),
                 };
                 log(format!(

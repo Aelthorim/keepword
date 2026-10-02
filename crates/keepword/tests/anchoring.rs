@@ -277,32 +277,47 @@ async fn upgrades_survive_failing_calendars_and_explorers() {
     cfg.anchor.esplora_url = Some(base.clone());
     Node::init(dir.path(), &cfg).unwrap();
     let node = Node::open(dir.path()).unwrap();
-    node.capture(&format!("{base}/page"), false).await.unwrap();
-    let a = node.anchor_submit().await.unwrap().unwrap();
-    let claims = ots::DetachedTimestamp::from_bytes(&a.ots)
-        .unwrap()
-        .timestamp
-        .claims();
-    assert_eq!(claims.len(), 2, "both calendars took the digest");
+    for _ in 0..2 {
+        node.capture(&format!("{base}/page"), false).await.unwrap();
+        let a = node.anchor_submit().await.unwrap().unwrap();
+        let claims = ots::DetachedTimestamp::from_bytes(&a.ots)
+            .unwrap()
+            .timestamp
+            .claims();
+        assert_eq!(claims.len(), 2, "both calendars took the digest");
+    }
 
     m.confirmed.store(true, Ordering::SeqCst);
     m.explorer_down.store(true, Ordering::SeqCst);
     let up = node.anchor_upgrade().await.unwrap();
-    assert_eq!((up.upgraded, up.confirmed), (1, 0));
+    assert_eq!((up.upgraded, up.confirmed), (2, 0));
+    // Once per calendar or explorer, not per anchor.
     assert_eq!(up.errors.len(), 2, "{:?}", up.errors);
-    let row = &node.store.anchors().unwrap()[0];
-    assert_eq!(row.status, "pending");
-    let kept = ots::DetachedTimestamp::from_bytes(&row.ots).unwrap();
     assert!(
-        kept.timestamp
-            .claims()
-            .iter()
-            .any(|c| matches!(c.attestation, Attestation::Bitcoin { height: HEIGHT })),
-        "the completed proof was kept"
+        up.errors.iter().all(|e| e.ends_with("(2 anchors)")),
+        "{:?}",
+        up.errors
     );
+    for row in node.store.anchors().unwrap() {
+        assert_eq!(row.status, "pending");
+        let kept = ots::DetachedTimestamp::from_bytes(&row.ots).unwrap();
+        assert!(
+            kept.timestamp
+                .claims()
+                .iter()
+                .any(|c| matches!(c.attestation, Attestation::Bitcoin { height: HEIGHT })),
+            "the completed proof was kept"
+        );
+    }
 
     m.explorer_down.store(false, Ordering::SeqCst);
     let up = node.anchor_upgrade().await.unwrap();
-    assert_eq!(up.confirmed, 1, "{:?}", up.errors);
-    assert_eq!(node.store.anchors().unwrap()[0].status, "confirmed");
+    assert_eq!(up.confirmed, 2, "{:?}", up.errors);
+    assert!(
+        node.store
+            .anchors()
+            .unwrap()
+            .iter()
+            .all(|a| a.status == "confirmed")
+    );
 }
