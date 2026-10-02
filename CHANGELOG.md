@@ -5,7 +5,7 @@ follow [Semantic Versioning](https://semver.org): from 1.0.0 on, the
 evidence formats (attestations, logs, bundles) and the network protocol
 only change incompatibly in a new major version.
 
-## [2.1.0] - 2026-10-02
+## [2.1.0] - Pre-release
 
 Fixes from an end-to-end bug hunt, most of them for what a hostile page or
 peer could make a witness do, and a logo. 2.0.0 and 2.1.0 witnesses
