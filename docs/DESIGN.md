@@ -207,7 +207,8 @@ The rules:
   the same result.
 - **Links**: resolved, fragment dropped, tracking parameters (`utm_*`,
   `fbclid`, `gclid`, …) removed. A link's text leaves out the links
-  nested in it (table cells can nest them).
+  nested in it (table cells can nest them). Only HTML `<a>` elements are
+  links.
 - **Images**: resolved and compared *without* query string (CDN resize
   parameters and signatures live there). `data:` URIs are replaced by
   their hash.
@@ -217,9 +218,13 @@ The rules:
 - **Charset**: Content-Type, then BOM, then `<meta charset>`, then UTF-8.
 - **Limits**: start tags nested more than 512 deep are ignored, and their
   text stays in the element they would have opened in (Chromium and
-  Safari don't nest deeper either). A page's tree stops growing at one
-  node per two bytes of markup. Without these, a page built for it takes
-  the parser time in the square of its size.
+  Safari don't nest deeper either). In SVG and MathML, where `<link>`,
+  `<style>` and the like open elements too, those close at once instead.
+  A page's tree stops growing at one node per two bytes of markup.
+  Without these, a page built for it takes the parser time in the square
+  of its size. With them, it takes time in proportion, but still about a
+  minute for the 32 MiB a capture may have: the parser looks through up
+  to 512 open elements for each end tag.
 - **JSON** is re-serialized with sorted keys. **Text** has each line
   cleaned. **Everything else** is opaque: the normalized form is the body
   hash.

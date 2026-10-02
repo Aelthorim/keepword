@@ -71,8 +71,9 @@ fn block_kind(name: &str) -> Option<&'static str> {
 /// nest elements deeper than 512 either.
 const MAX_PARSER_STATE: usize = 512;
 
-/// Start tags that never leave an element open (void elements), or whose
-/// content the tokenizer must read as text: always passed on.
+/// Start tags that never leave an HTML element open (void elements), or
+/// whose content the tokenizer must read as text: passed on at the bound.
+/// In SVG and MathML, they are elements like any other.
 fn opens_nothing(name: &LocalName) -> bool {
     matches!(
         &**name,
@@ -123,6 +124,8 @@ impl Tracer for Count {
 /// [`MAX_PARSER_STATE`] and, while it stays there, the end tags that would
 /// have closed them (their content stays, in the element they would have
 /// nested in), and minus everything after the tree reaches `max_nodes`.
+/// Past the bound, SVG and MathML elements with void or raw-text names are
+/// closed at once.
 struct Bounded {
     tb: TreeBuilder<NodeId, Html>,
     dropped: HashMap<LocalName, usize>,
@@ -140,7 +143,7 @@ impl Bounded {
 impl TokenSink for Bounded {
     type Handle = NodeId;
 
-    fn process_token(&mut self, token: Token, line: u64) -> TokenSinkResult<NodeId> {
+    fn process_token(&mut self, mut token: Token, line: u64) -> TokenSinkResult<NodeId> {
         if self.tb.sink.tree.nodes().len() > self.max_nodes && token != Token::EOFToken {
             return TokenSinkResult::Continue;
         }
@@ -149,17 +152,30 @@ impl TokenSink for Bounded {
             name,
             self_closing,
             ..
-        }) = &token
+        }) = &mut token
         {
-            let opens = *kind == TagKind::StartTag && !opens_nothing(name);
-            if opens || (*kind == TagKind::EndTag && !self.dropped.is_empty()) {
+            let start = *kind == TagKind::StartTag;
+            let opens = start && !opens_nothing(name);
+            let foreign = start
+                && !opens
+                && !*self_closing
+                && self
+                    .tb
+                    .adjusted_current_node_present_but_not_in_html_namespace();
+            if opens || foreign || (*kind == TagKind::EndTag && !self.dropped.is_empty()) {
                 if self.state() < MAX_PARSER_STATE {
                     // Back below the bound, the elements dropped at it would
                     // have been closed by now: their names mustn't take the
                     // end tags of later elements.
                     self.dropped.clear();
+                } else if foreign {
+                    // Closed, not dropped: where HTML's rules apply again,
+                    // as in an SVG <foreignObject>, they ignore the flag on
+                    // these tags, and a raw-text one must still switch the
+                    // tokenizer.
+                    *self_closing = true;
                 } else if opens {
-                    if !self_closing {
+                    if !*self_closing {
                         *self.dropped.entry(name.clone()).or_default() += 1;
                     }
                     return TokenSinkResult::Continue;
@@ -316,7 +332,7 @@ impl<'a> Walker<'a> {
             self.flush(open.kind);
         }
         let v = open.el.value();
-        if v.name() == "a" {
+        if is_html_a(v) {
             if let Some(href) = v.attr("href").and_then(|h| clean_link(self.base, h)) {
                 let text = clean_text(&link_text(open.el));
                 self.pending.push(format!("link: {href} | {text}"));
@@ -501,6 +517,7 @@ mod tests {
             "<!doctype html><title>T</title><p>a<b>b<i>c</b>d</i><table><tr><td>e<a href=/x>f",
             "<p><font color=1>a<p><font color=2>b<p>c<p>d",
             "<svg><title>s</title></svg><math><mi>m</mi></math><template><p>t</template>",
+            "<svg><link><style>p{}</style><foreignObject><style>q{}</style></svg>",
             "<select><option>1<option>2</select><textarea><p>raw</textarea><script>x<y</script>",
             nested.as_str(),
         ] {
@@ -540,6 +557,52 @@ mod tests {
         );
         let out = normalize(&html, &base(), None, 0);
         assert_eq!(out, ["text: deep", "p: after"]);
+    }
+
+    #[test]
+    fn foreign_nesting_is_bounded_too() {
+        // In SVG and MathML, void and raw-text names are elements like any
+        // other. They nested past the bound, and each end tag after them
+        // looked through all of them: 256 kB took 15 s, 32 MiB days.
+        for (open, close) in [("<svg>", "</svg>"), ("<math>", "</math>")] {
+            let html = format!(
+                "<p>before{open}{}{close}<p>after",
+                "<link><style>".repeat(20_000)
+            );
+            assert!(deepest(&parse(&html)) <= MAX_PARSER_STATE + 8);
+            assert_eq!(
+                normalize(&html, &base(), None, 0),
+                ["p: before", "p: after"]
+            );
+        }
+    }
+
+    /// The parser's state once it has read `html`.
+    fn state_after(html: &str) -> usize {
+        let tb = TreeBuilder::new(Html::new_document(), TreeBuilderOpts::default());
+        let sink = Bounded {
+            tb,
+            dropped: HashMap::new(),
+            max_nodes: usize::MAX,
+        };
+        let mut tok = Tokenizer::new(sink, TokenizerOpts::default());
+        let mut input = BufferQueue::default();
+        input.push_back(StrTendril::from(html));
+        while let TokenizerResult::Script(_) = tok.feed(&mut input) {}
+        tok.sink.state()
+    }
+
+    #[test]
+    fn raw_text_at_the_bound_is_still_text() {
+        // In an SVG <foreignObject>, HTML's rules apply again, and the
+        // rest of the page is <plaintext>'s text, also at the bound.
+        let deep = format!(
+            "<body><svg>{}<foreignObject>",
+            "<g>".repeat(MAX_PARSER_STATE - 1 - state_after("<body><svg>"))
+        );
+        assert_eq!(state_after(&deep), MAX_PARSER_STATE);
+        let html = format!("{deep}<plaintext></svg><p>text");
+        assert!(parse(&html) == Html::parse_document(&html));
     }
 
     #[test]
@@ -586,5 +649,17 @@ mod tests {
         let total: usize = out.iter().map(String::len).sum();
         assert!(total < 3 * html.len(), "{total} bytes from {}", html.len());
         assert!(links[0].ends_with(&"word ".repeat(1000).trim_end().to_string()));
+        // An SVG or MathML element named main can be where the walk
+        // starts. Its <a> elements aren't HTML links: they nest freely, and
+        // a 1 MB page made 400 MB of link text.
+        for open in ["<svg>", "<math>"] {
+            let html = format!(
+                "{open}<main>{}{}",
+                "<a href=/x>".repeat(n),
+                "word ".repeat(1000)
+            );
+            let out = normalize(&html, &base(), None, 0);
+            assert_eq!(out, [format!("text: {}", "word ".repeat(1000).trim_end())]);
+        }
     }
 }

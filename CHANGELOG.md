@@ -29,9 +29,11 @@ before. Upgrade every witness.
 ### Changed
 
 - **Normalized text is `keepword-norm/3`.** The normalizer has limits for
-  hostile pages now, and a link's text leaves out the links nested in it
-  (see Fixed), so such pages normalize differently. As every normalized
-  text starts with the version, every normalized hash changes.
+  hostile pages now, a link's text leaves out the links nested in it and
+  only HTML `<a>` elements are links (see Fixed), and where tags are
+  misnested, a link's text no longer runs on past the link or stops
+  short. Such pages normalize differently, and as every normalized text
+  starts with the version, every normalized hash changes.
 
 ### Fixed
 
@@ -42,10 +44,13 @@ before. Upgrade every witness.
   the 32 MiB a capture may have), formatting tags it reopens in every
   paragraph made 160 kB of markup take 3.6 GB, and a link nested in links
   repeated the text of every link inside it: a 1 MB page normalized to
-  4 GB. Pages are now read without recursion, tags nested more than 512
-  deep are ignored (their text is kept), a page's tree stops growing at
-  one node per two bytes, and a link's text leaves out the links inside
-  it.
+  4 GB. Pages are now read without recursion, and tags nested more than
+  512 deep are ignored, their text kept; in SVG and MathML, `<link>`,
+  `<style>` and the like open elements too, and there they close at once.
+  A page's tree stops growing at one node per two bytes, a link's text
+  leaves out the links inside it, and only HTML `<a>` elements are links:
+  an SVG or MathML `<main>` can be where the normalizer starts, and `<a>`
+  nests freely there. A page built for it still takes about a minute.
 - **Diffs of big rewrites could run for days.** Finding the fewest changes
   between two versions takes time in the square of the lines changed, two
   minutes for 100 000. After a second, the rest now shows as replaced,
