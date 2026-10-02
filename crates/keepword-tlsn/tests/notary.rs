@@ -12,6 +12,7 @@ use keepword_core::{Digest, now_ms};
 use keepword_tlsn::{Limits, Notary, TlsnHello, VerifierService, capture_with, roots_from};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::Instant;
 
 /// A TLS 1.2 web server with TLSNotary's test certificate for
 /// `test-server.io`, serving one page.
@@ -184,21 +185,25 @@ async fn oversized_session_is_refused_with_the_reason() {
     );
 }
 
-/// Reads until the peer closes the connection, and says when that was.
-/// Time is paused in the tests using this: it jumps to the next timer
-/// whenever nothing else can run.
-async fn until_closed(sock: &mut TcpStream) -> Duration {
-    let start = tokio::time::Instant::now();
+/// Reads until the peer closes the connection, which must still be open at
+/// `open_until`. Time is paused in the tests using this, and whenever a
+/// test waits, even on I/O, the clock jumps to the next timer: so this can
+/// tell whether a connection was open at a deadline but not when it
+/// closed, and the deadline has to be set before connecting, with no other
+/// timer pending.
+async fn closes_after(sock: &mut TcpStream, open_until: Instant) {
     let mut buf = vec![0u8; 1 << 16];
-    let drain = async { while sock.read(&mut buf).await.is_ok_and(|n| n > 0) {} };
+    let mut drain =
+        std::pin::pin!(async { while sock.read(&mut buf).await.is_ok_and(|n| n > 0) {} });
+    let early = tokio::time::timeout_at(open_until, drain.as_mut()).await;
+    assert!(early.is_err(), "the connection closed too early");
     tokio::time::timeout(Duration::from_secs(24 * 3600), drain)
         .await
         .expect("the connection was never closed");
-    start.elapsed()
 }
 
 /// A verifier hangs up on a connection that never says what it wants, and
-/// on a prover that goes quiet in the session.
+/// on a prover that goes quiet in the session, once their timeouts run out.
 #[tokio::test(start_paused = true)]
 async fn verifier_hangs_up_on_silent_provers() {
     let (pdir, vdir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -210,8 +215,10 @@ async fn verifier_hangs_up_on_silent_provers() {
     let vaddr = listener.local_addr().unwrap();
     tokio::spawn(VerifierService::new(verifier, roots, Limits::default(), true).serve(listener));
 
+    // The request timeout is 30 seconds.
+    let open_until = Instant::now() + Duration::from_secs(29);
     let mut quiet = TcpStream::connect(vaddr).await.unwrap();
-    assert!(until_closed(&mut quiet).await >= Duration::from_secs(30));
+    closes_after(&mut quiet, open_until).await;
 
     let hello = Signed::sign(
         TlsnHello {
@@ -224,6 +231,8 @@ async fn verifier_hangs_up_on_silent_provers() {
     )
     .unwrap();
     let hello = serde_json::to_vec(&hello).unwrap();
+    // The session timeout is ten minutes.
+    let open_until = Instant::now() + Duration::from_secs(9 * 60);
     let mut quiet = TcpStream::connect(vaddr).await.unwrap();
     quiet.write_u8(b'P').await.unwrap();
     quiet
@@ -231,7 +240,7 @@ async fn verifier_hangs_up_on_silent_provers() {
         .await
         .unwrap();
     quiet.write_all(&hello).await.unwrap();
-    assert!(until_closed(&mut quiet).await >= Duration::from_secs(10 * 60));
+    closes_after(&mut quiet, open_until).await;
 }
 
 /// A capture gives up on a verifier that goes quiet, and hangs up on it.
@@ -246,17 +255,20 @@ async fn capture_gives_up_on_a_silent_verifier() {
         roots: roots_from(&[tlsn_server_fixture_certs::CA_CERT_DER]),
         limits: Limits::default(),
     };
-    // Takes the hello and the session, and never answers.
-    let verifier = tokio::spawn(async move {
+    // Takes the hello and the session, and never answers. The session
+    // timeout is ten minutes.
+    let open_until = Instant::now() + Duration::from_secs(9 * 60);
+    let mut verifier = tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
-        until_closed(&mut sock).await
+        closes_after(&mut sock, open_until).await;
     });
 
     let (client, _server) = tokio::io::duplex(1 << 16);
     let url = url::Url::parse("https://test-server.io/terms").unwrap();
-    let err = capture_with(&prover, &notary, client, None, &url)
-        .await
-        .unwrap_err();
+    let err = tokio::select! {
+        r = capture_with(&prover, &notary, client, None, &url) => r.unwrap_err(),
+        r = &mut verifier => panic!("the capture never gave up: {r:?}"),
+    };
     assert!(format!("{err:#}").contains("timed out"), "{err:#}");
-    assert!(verifier.await.unwrap() >= Duration::from_secs(10 * 60));
+    verifier.await.unwrap();
 }

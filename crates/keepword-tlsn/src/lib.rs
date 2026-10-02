@@ -15,6 +15,7 @@
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
+use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -314,6 +315,17 @@ impl VerifierService {
         loop {
             let (sock, peer) = match listener.accept().await {
                 Ok(conn) => conn,
+                // One connection that died before it was accepted.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        ErrorKind::ConnectionAborted
+                            | ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    continue;
+                }
                 // Out of file descriptors, say: sessions ending free some.
                 Err(e) => {
                     eprintln!("tlsn accept: {e}");
